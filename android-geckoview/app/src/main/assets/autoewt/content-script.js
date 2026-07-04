@@ -18,6 +18,7 @@
   const DAY_SWITCH_DELAY = 2500;
   const COURSE_PROBE_RETRY_DELAY = 10000;
   const EXACT_STUDY_PROGRESS_RE = /^学\s*\d+(?:\.\d+)?\s*[%％]$/;
+  const WATCH_PROGRESS_RE = /已看\s*\d+(?:\.\d+)?\s*[%％]/;
   const missedCheckpointReplayElements = new WeakSet();
 
   let port = null;
@@ -32,6 +33,8 @@
   let lastLessonClickLabel = "";
   let lastLessonClickUrl = "";
   let lastDayClickAt = 0;
+  let lastPlaylistClickAt = 0;
+  let lastPlaylistClickSignature = "";
   let lastCheckpointTapAt = 0;
   let lastCheckpointSignature = "";
   let videoEndReported = false;
@@ -327,6 +330,118 @@
     return config.child_task_kind === "oneClick" || isFmPage();
   }
 
+  function isPlayVideosPage() {
+    return /\/homework\/play-videos|#\/homework\/play-videos/i.test(location.href);
+  }
+
+  function clickVideoPlaylistItem() {
+    const candidates = findVideoPlaylistItems();
+    const candidate = candidates[0] || null;
+    if (!candidate) {
+      return { clicked: false };
+    }
+
+    const label = labelForPlaylistItem(candidate);
+    const signature = compactText(candidate).slice(0, 120);
+    const now = Date.now();
+    if (signature === lastPlaylistClickSignature && now - lastPlaylistClickAt < 5000) {
+      return { clicked: false, label };
+    }
+
+    lastPlaylistClickAt = now;
+    lastPlaylistClickSignature = signature;
+    const clickInfo = clickElementInfo(candidate);
+    requestNativeTap(clickInfo, label, "videoPlaylist");
+    return { clicked: true, label };
+  }
+
+  function findVideoPlaylistItems() {
+    const raw = Array.from(document.querySelectorAll("button, a, [role='button'], div, li, span"))
+      .filter((element) => {
+        const text = compactText(element);
+        if (!visible(element) || text.length < 2 || text.length > 180) {
+          return false;
+        }
+        if (/导学案|课后习题|刷新进度/.test(text)) {
+          return false;
+        }
+        return WATCH_PROGRESS_RE.test(text) || (/视频|时长/.test(text) && /已看\s*\d|0\.0\s*[%％]|0\s*[%％]/.test(text));
+      })
+      .map(playlistActionElement);
+    const candidates = uniqueElements(raw)
+      .filter((element) => visible(element) && isLikelyPlaylistItem(element))
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return playlistScore(left) - playlistScore(right)
+          || leftRect.top - rightRect.top
+          || rightRect.left - leftRect.left;
+      });
+    const unfinished = candidates.filter((element) => !isCompletedPlaylistItem(element));
+    return unfinished.length ? unfinished : candidates;
+  }
+
+  function playlistActionElement(element) {
+    let current = element;
+    for (let depth = 0; current && current !== document.body && depth < 6; depth += 1) {
+      const text = compactText(current);
+      if (text.length > 220) {
+        return element;
+      }
+      const style = window.getComputedStyle(current);
+      const className = String(current.className || "");
+      if (
+        current.matches("button, a, [role='button'], li")
+        || style.cursor === "pointer"
+        || /(^|[-_\s])(item|list|lesson|video|course|active|selected)([-_\s]|$)/i.test(className)
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return element;
+  }
+
+  function isLikelyPlaylistItem(element) {
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 8 || rect.height <= 8) {
+      return false;
+    }
+    const text = compactText(element);
+    if (/导学案|课后习题|刷新进度/.test(text)) {
+      return false;
+    }
+    return WATCH_PROGRESS_RE.test(text) || /已看\s*\d|视频|时长/.test(text);
+  }
+
+  function isCompletedPlaylistItem(element) {
+    return /已看\s*100(?:\.0+)?\s*[%％]/.test(compactText(element));
+  }
+
+  function playlistScore(element) {
+    const rect = element.getBoundingClientRect();
+    const text = compactText(element);
+    let score = 0;
+    if (!WATCH_PROGRESS_RE.test(text)) {
+      score += 20;
+    }
+    if (/已看\s*0(?:\.0+)?\s*[%％]/.test(text)) {
+      score -= 5;
+    }
+    if (isCompletedPlaylistItem(element)) {
+      score += 80;
+    }
+    if (rect.left < viewportWidth() * 0.45) {
+      score += 40;
+    }
+    score += Math.max(0, rect.width * rect.height - 30000) / 2000;
+    return score;
+  }
+
+  function labelForPlaylistItem(element) {
+    return compactText(element).replace(/\s+/g, " ").slice(0, 80);
+  }
+
   function findPlaybackButton() {
     const direct = Array.from(document.querySelectorAll([
       ".vjs-big-play-button",
@@ -558,9 +673,17 @@
       return;
     }
     if (automationTimer) {
-      clearTimeout(automationTimer);
+      try {
+        clearTimeout(automationTimer);
+      } catch (error) {
+        // GeckoView can tear down the content global while a navigation is in flight.
+      }
     }
-    automationTimer = setTimeout(runAutomation, delay);
+    try {
+      automationTimer = setTimeout(runAutomation, delay);
+    } catch (error) {
+      automationTimer = 0;
+    }
   }
 
   async function runAutomation() {
@@ -645,6 +768,17 @@
     const video = document.querySelector("video");
     if (video) {
       handleVideo(video);
+      return;
+    }
+    if (isPlayVideosPage()) {
+      const playlistResult = clickVideoPlaylistItem();
+      if (playlistResult.clicked) {
+        setNextAutomationDelay(DAY_SWITCH_DELAY);
+        logAutomation("已点击视频小节", { label: playlistResult.label });
+        return;
+      }
+      setNextAutomationDelay(COURSE_PROBE_RETRY_DELAY);
+      logAutomation("等待视频小节或播放器加载");
       return;
     }
 
