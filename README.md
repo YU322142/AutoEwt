@@ -1,101 +1,184 @@
 # AutoEwt
 
-## 协议与声明
+> 本项目仅用于 Python、浏览器自动化与跨平台客户端技术研究。请不要将它用于违反学校纪律、平台规则或法律法规的行为。
+
+AutoEwt 目前包含两条实现线：
+
+- **桌面版**：基于 Python + Selenium，保留命令行入口，并提供 Windows GUI。
+- **Android 实验版**：基于 GeckoView + WebExtension + Compose/Material3，目标是把浏览器内核一并打包，降低用户配置成本。
+
+## 声明
 
 - 本软件遵循 [GNU General Public License v3.0](LICENSE) 开源许可证。
-- **本软件的目的仅在研究 `Python` 技术，您不得使用它来应付学校的任务，或是做其他违反纪律、法律的事。**
-- **如果您擅自使用本软件做不当的事，产生的任何后果和影响均由您自己承担，与我们无关。**
-- **开始使用本软件即代表您同意上述协议和声明，同意 [着火的冰块nya](https://space.bilibili.com/551409211)
-  及其他开发者不为您的行为承担任何责任。**
+- 本软件的目的仅在研究技术实现，不鼓励、不支持任何不当使用。
+- 因使用本软件造成的任何后果，由使用者自行承担。
+- 开始使用即视为你已阅读并同意本声明。
 
-## 如何使用
+## 目录结构
 
-> [!NOTE]
-> **不要把本软件或浏览器驱动放在包含中文或其他特殊字符的路径下！**
+```text
+src/                    Python 桌面版核心逻辑、CLI 与 GUI
+android-geckoview/       Android GeckoView 实验版
+.github/workflows/       GitHub Actions 云端构建
+```
 
-### 1. 下载浏览器驱动
+## 桌面版快速开始
 
-请打开您的浏览器，查看它的版本。
+### 1. 准备环境
 
-然后下载**对应版本**的浏览器驱动，解压后放在您喜欢的位置。
+- Python 3.12
+- `uv`
+- 浏览器与对应版本的 WebDriver
 
-以下是一些您可能用得到的链接：
+推荐使用 Edge 或 Chrome。浏览器驱动需要与你本机浏览器版本匹配。
 
-- [Chrome 驱动文件下载 (chromedriver)](https://www.cnblogs.com/aiyablog/articles/17948703)
-- [Edge 驱动文件下载 (msedgedriver)](https://developer.microsoft.com/zh-cn/microsoft-edge/tools/webdriver)
-- [Firefox 驱动文件下载 (geckodriver)](https://github.com/mozilla/geckodriver/releases)
+常用下载地址：
 
-以下是所有**可能**支持的浏览器：
+- [ChromeDriver](https://googlechromelabs.github.io/chrome-for-testing/)
+- [Microsoft Edge WebDriver](https://developer.microsoft.com/microsoft-edge/tools/webdriver/)
+- [GeckoDriver](https://github.com/mozilla/geckodriver/releases)
 
-- Firefox
-- Chrome（如果你是 Chromium，也请在下面的浏览器名中填写 Chrome）
-- Ie
-- Edge
-- Safari
-- WebKitGTK
-- WPEWebKit
+### 2. 配置
 
-推荐使用 **Edge**，因为我们的开发就在 Edge 上进行。别的浏览器不保证能用。
+复制默认配置：
 
-### 2. 修改配置文件
+```powershell
+Copy-Item src/config.yml.default src/config.yml
+```
 
-请根据您自己的情况，修改 `config.yml.default` 中的内容，并删去 `.default` 后缀：
+然后编辑 `src/config.yml`：
 
 ```yaml
-# 修改时不要删掉冒号后的空格
-browser: 浏览器名称（首字母大写），如 Chrome, Edge 等
-driver_path: 浏览器驱动路径
 username: 用户名
 password: 密码
 list_url: 课程列表页面的链接
-# 浏览器启动时的参数，这里给了个静音
-options: --mute-audio
-# AutoEwt 模式，选填 video（看课）/ paper（做试卷）
+browser: Chrome
+driver_path: .\chromedriver.exe
+browser_binary: .\chrome-win64\chrome.exe
+options: --mute-audio --headless
 mode: video
-# 是否 (true / false) 给选择题选择正确答案
-choose_correctly: true
-# 如果 choose_correctly 为 true，请填写 report_id 字段，否则可以不动
-# 一张**已经完成**的试卷的 reportId（请到浏览器上方链接中获取该参数的值）
-report_id: reportId
-# 从第几天开始扫描（用于开发者调试程序方便，当然用户也可以设置，每次启动能省一丢丢时间）
+delay_multiplier: 1.0
 day_to_start_on: 1
+choose_correctly: true
+report_id:
 ```
 
-> [!NOTE]
-> 填写 `driver_path` 字段时，您可能会使用 Windows 11 右键菜单的“复制文件地址”，这样得到的路径是带引号的。请**删除引号**~~或在左引号前加上 `r` 或把每个 `\` 都换成 `\\`~~。
+关键字段：
 
-### 3. 启动！
+- `mode: video`：刷课模式
+- `mode: paper`：做题模式
+- `driver_path`：浏览器驱动路径
+- `browser_binary`：可选，便携浏览器路径
+- `options`：浏览器启动参数
+- `day_to_start_on`：从第几天开始扫描
+- `report_id`：做题模式需要时填写
 
-双击运行 `AutoEwt`，然后用您的双手去做更有意义的事！
-
-> [!NOTE]
-> 在该程序运行时启动 Minecraft 可能会导致视频被暂停，建议 Minecraft 启动完成之后检查一下视频播放情况，以免造成不必要的损失。
-> 
-> 该 bug 作用机理尚不明确，难以稳定复现，且不存在任何日志记录，无法修复，见谅。
-> 
-> 如果您找到了稳定复现的方法，欢迎提 issue 报告。
-
-## GUI 界面
-
-GUI 使用 `PySide6-Fluent-Widgets`，仅考虑 Windows 适配。GUI 是独立入口，核心自动化和命令行入口仍然保留。
-
-```powershell
-uv sync --extra gui
-uv run python src/gui.py
-```
-
-如果希望双击启动且不显示外部命令行窗口，可以运行 `src/gui.pyw`。GUI 内置控制台会显示日志、异常和自动重启信息，视频播放进度会显示在窗口进度条中。
-
-## 无 GUI 启动
+### 3. 命令行启动
 
 ```powershell
 uv sync
 uv run python src/main.py
 ```
 
-程序异常崩溃后会自动等待并重启；只有正常完成或用户手动停止时才结束。
+程序异常崩溃后会自动等待并重启；正常完成或用户停止时才退出。
 
-## 开发环境
+## Windows GUI
 
-- Python 3.12
-- Edge 138
+GUI 与核心自动化逻辑分离，命令行入口仍然保留。
+
+安装 GUI 依赖：
+
+```powershell
+uv sync --extra gui
+```
+
+启动 QFluentWidgets GUI：
+
+```powershell
+uv run python src/gui.py
+```
+
+无外部控制台窗口启动：
+
+```powershell
+uv run python src/gui.pyw
+```
+
+RinUI/QML 实验入口：
+
+```powershell
+uv run python src/rin_gui.py
+```
+
+GUI 会提供配置页、运行日志、进度显示与停止控制。核心运行仍由 `src/runner.py` 管理，因此 GUI 与无 GUI 模式可以继续拆分维护。
+
+## Android 实验版
+
+Android 版本位于 [android-geckoview](android-geckoview/)。
+
+特性：
+
+- 内置 GeckoView 浏览器内核，无需用户安装 WebDriver。
+- 使用 WebExtension/native messaging 与页面通信。
+- UI 使用 Compose/Material3。
+- 支持浏览器界面显示/隐藏、视频进度、日志完整/单行/隐藏。
+- 最低兼容 Android 8.0 / API 26。
+
+本地构建：
+
+```powershell
+cd android-geckoview
+gradle :app:assembleDebug
+```
+
+APK 输出：
+
+```text
+android-geckoview/app/build/outputs/apk/debug/app-debug.apk
+```
+
+安装到已连接设备：
+
+```powershell
+adb install -r android-geckoview/app/build/outputs/apk/debug/app-debug.apk
+```
+
+更多 Android 说明见 [android-geckoview/README.md](android-geckoview/README.md)。
+
+## 云端构建
+
+Android APK 由 GitHub Actions 构建：
+
+- Workflow: `.github/workflows/android-geckoview.yml`
+- 触发方式：推送 `android-geckoview/**` 或手动 `workflow_dispatch`
+- Artifact: `autoewt-geckoview-debug-apk`
+
+推送分支后，在 GitHub 仓库的 **Actions** 页面进入 `Android GeckoView Prototype`，下载构建产物即可。
+
+## 开发说明
+
+- Python 核心逻辑位于 `src/auto_base.py`、`src/auto_video/`、`src/auto_paper/`。
+- 桌面运行循环位于 `src/runner.py`，负责日志、异常恢复和进度回调。
+- Android 自动化脚本位于 `android-geckoview/app/src/main/assets/autoewt/content-script.js`。
+- Android UI 位于 `android-geckoview/app/src/main/java/io/github/autoewt/gecko/AutoEwtComposeUi.kt`。
+- Android 浏览器生命周期与 GeckoView bridge 位于 `MainActivity.java`。
+
+## 兼容性边界
+
+- 桌面版继续依赖用户本机浏览器和 WebDriver。
+- Android 主线最低 Android 8.0，因为当前 GeckoView 要求 API 26+。
+- 如需 Android 6/7，需要单独 legacy flavor，并更换或锁定旧浏览器内核；这不作为当前主线目标。
+
+## 常见问题
+
+### 为什么 Android 版不用系统 WebView？
+
+系统 WebView 版本由设备决定，不利于减少用户学习和排错成本。GeckoView 可以把浏览器内核随 APK/AAB 分发，行为更可控。
+
+### 登录验证码怎么办？
+
+桌面版和 Android 版都不会绕过验证码或短信验证。应用最多填入账号密码，验证码仍需要用户手动完成。
+
+### GUI 崩溃会直接退出吗？
+
+桌面运行循环会捕获异常并自动重启核心任务。GUI 只是查看和控制层，核心异常恢复逻辑在 `src/runner.py`。
