@@ -44,9 +44,13 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,6 +64,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.launch
 import org.mozilla.geckoview.GeckoView
 
 class AutoEwtUiState {
@@ -447,19 +452,56 @@ private fun LogPanel(state: AutoEwtUiState, modifier: Modifier = Modifier) {
     when (state.logMode) {
         AutoEwtUiState.LOG_MODE_FULL -> {
             val scroll = rememberScrollState()
-            Column(
+            val scope = rememberCoroutineScope()
+            var followTail by remember { mutableStateOf(true) }
+            val atBottom by remember {
+                derivedStateOf { scroll.maxValue == 0 || scroll.value >= scroll.maxValue - 6 }
+            }
+            LaunchedEffect(scroll.value, scroll.maxValue) {
+                if (scroll.isScrollInProgress || atBottom) {
+                    followTail = atBottom
+                }
+            }
+            LaunchedEffect(state.fullLog, scroll.maxValue) {
+                if (followTail) {
+                    scroll.scrollTo(scroll.maxValue)
+                }
+            }
+            Box(
                 modifier = modifier
                     .height(170.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .verticalScroll(scroll)
-                    .padding(10.dp)
             ) {
-                Text(
-                    text = state.fullLog.ifBlank { "暂无日志" },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scroll)
+                        .padding(start = 10.dp, top = 10.dp, end = 10.dp, bottom = 48.dp)
+                ) {
+                    Text(
+                        text = state.fullLog.ifBlank { "暂无日志" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (!atBottom) {
+                    TextButton(
+                        onClick = {
+                            followTail = true
+                            scope.launch {
+                                scroll.animateScrollTo(scroll.maxValue)
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(6.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                    ) {
+                        Text("跳到最新")
+                    }
+                }
             }
         }
         AutoEwtUiState.LOG_MODE_SINGLE -> {

@@ -12,6 +12,10 @@
   const PYTHON_CHECKPOINT_ACTION_RE = /点击通过检查|跳过/;
   const PAUSED_CHECKPOINT_ACTION_RE = /我知道了|知道了|通过检查|继续播放|继续学习|确定|确认/;
   const MISSED_CHECKPOINT_RE = /错过了所有看课检测点|再认真观看一次/;
+  const DAY_DATE_RE = /(\d{1,2})\s*月\s*(\d{1,2})\s*日/;
+  const DEFAULT_AUTOMATION_DELAY = 1500;
+  const DAY_SWITCH_DELAY = 2500;
+  const COURSE_PROBE_RETRY_DELAY = 10000;
   const missedCheckpointReplayElements = new WeakSet();
 
   let port = null;
@@ -19,6 +23,7 @@
   let automationRunning = false;
   let automationTimer = 0;
   let automationBusy = false;
+  let nextAutomationDelay = DEFAULT_AUTOMATION_DELAY;
   let lastLoginSubmitAt = 0;
   let lastLessonClickAt = 0;
   let lastLessonClickSignature = "";
@@ -33,6 +38,8 @@
   let childSessionActive = false;
   let fmEntryExitReported = false;
   let lastFmEntryUrl = "";
+  let dayCursorIndex = -1;
+  let dayListSignature = "";
   const failedCourseSignatures = new Set();
   const finishedOneClickSignatures = new Set();
 
@@ -523,6 +530,9 @@
     const wasRunning = automationRunning;
     automationRunning = true;
     if (!wasRunning) {
+      resetDayScanState();
+    }
+    if (!wasRunning) {
       logAutomation("自动刷课已启动", { reason });
     }
     scheduleAutomation(200);
@@ -530,6 +540,7 @@
 
   function stopAutomation(reason) {
     automationRunning = false;
+    resetDayScanState();
     if (automationTimer) {
       clearTimeout(automationTimer);
       automationTimer = 0;
@@ -555,14 +566,34 @@
       return;
     }
     automationBusy = true;
+    nextAutomationDelay = DEFAULT_AUTOMATION_DELAY;
     try {
       await automationStep();
     } catch (error) {
       logAutomation("自动化步骤异常", { error: String(error && error.message || error) });
     } finally {
       automationBusy = false;
-      scheduleAutomation(1500);
+      scheduleAutomation(nextAutomationDelay);
     }
+  }
+
+  function setNextAutomationDelay(delay) {
+    nextAutomationDelay = Math.max(nextAutomationDelay, delay);
+  }
+
+  function resetDayScanState() {
+    dayCursorIndex = -1;
+    dayListSignature = "";
+    lastDayClickAt = 0;
+    clearCourseClickState();
+  }
+
+  function clearCourseClickState() {
+    lastLessonClickSignature = "";
+    lastLessonClickLabel = "";
+    lastLessonClickUrl = "";
+    failedCourseSignatures.clear();
+    finishedOneClickSignatures.clear();
   }
 
   function shouldPauseAutomationForVisibility() {
@@ -621,16 +652,19 @@
       return;
     }
     if (result.dayClicked) {
+      setNextAutomationDelay(DAY_SWITCH_DELAY);
       logAutomation("已切换到任务日期", { dayIndex: result.dayIndex + 1 });
       return;
     }
     if (result.totalDays > 0) {
+      setNextAutomationDelay(COURSE_PROBE_RETRY_DELAY);
       logAutomation("暂未找到未完成视频课程", {
         totalDays: result.totalDays,
         dayIndex: result.dayIndex + 1,
         buttons: result.buttonCount
       });
     } else {
+      setNextAutomationDelay(COURSE_PROBE_RETRY_DELAY);
       logAutomation("等待课程列表加载");
     }
   }
@@ -638,16 +672,34 @@
   function clickNextCourse() {
     markStaleLessonClick();
 
-    const days = Array.from(document.querySelectorAll('li[data-active="true"], li[data-active="false"]')).filter(visible);
+    const days = findCourseDays();
     const startIndex = Math.max(0, Number(config.day_to_start_on || 1) - 1);
-    let selectedDayIndex = days.findIndex((day) => day.getAttribute("data-active") === "true");
-    if (selectedDayIndex < startIndex) {
-      selectedDayIndex = -1;
+    syncDayCursor(days, startIndex);
+    let selectedDayIndex = findSelectedCourseDayIndex(days);
+    if (selectedDayIndex < 0 && lastDayClickAt > 0 && Date.now() - lastDayClickAt < 10000) {
+      selectedDayIndex = dayCursorIndex;
     }
-    if (selectedDayIndex < 0 && days.length > 0) {
-      const dayIndex = Math.min(startIndex, days.length - 1);
-      clickElement(days[dayIndex]);
-      return { clicked: false, dayClicked: true, dayIndex, totalDays: days.length, buttonCount: 0 };
+    if (!days.length) {
+      return {
+        clicked: false,
+        dayClicked: false,
+        totalDays: 0,
+        dayIndex: 0,
+        buttonCount: 0
+      };
+    }
+    if (dayCursorIndex >= days.length) {
+      return {
+        clicked: false,
+        dayClicked: false,
+        totalDays: days.length,
+        dayIndex: days.length - 1,
+        buttonCount: 0
+      };
+    }
+    if (selectedDayIndex !== dayCursorIndex) {
+      clickCourseDay(days[dayCursorIndex]);
+      return { clicked: false, dayClicked: true, dayIndex: dayCursorIndex, totalDays: days.length, buttonCount: 0 };
     }
 
     const candidates = findCourseButtonCandidates(false);
@@ -659,7 +711,7 @@
           clicked: false,
           dayClicked: false,
           totalDays: days.length,
-          dayIndex: Math.max(0, selectedDayIndex),
+          dayIndex: Math.max(0, dayCursorIndex),
           buttonCount: candidates.length
         };
       }
@@ -669,7 +721,7 @@
           clicked: false,
           dayClicked: false,
           totalDays: days.length,
-          dayIndex: Math.max(0, selectedDayIndex),
+          dayIndex: Math.max(0, dayCursorIndex),
           buttonCount: candidates.length
         };
       }
@@ -687,18 +739,15 @@
         label: candidate.label,
         dayClicked: false,
         totalDays: days.length,
-        dayIndex: Math.max(0, selectedDayIndex),
+        dayIndex: Math.max(0, dayCursorIndex),
         buttonCount: candidates.length
       };
     }
 
-    const nextDayIndex = nextAvailableDayIndex(days, selectedDayIndex, startIndex);
+    const nextDayIndex = nextAvailableDayIndex(days, dayCursorIndex, startIndex);
     if (nextDayIndex >= 0) {
-      const now = Date.now();
-      if (now - lastDayClickAt > 1500) {
-        lastDayClickAt = now;
-        clickElement(days[nextDayIndex]);
-      }
+      dayCursorIndex = nextDayIndex;
+      clickCourseDay(days[nextDayIndex]);
       return { clicked: false, dayClicked: true, dayIndex: nextDayIndex, totalDays: days.length, buttonCount: 0 };
     }
 
@@ -706,9 +755,128 @@
       clicked: false,
       dayClicked: false,
       totalDays: days.length,
-      dayIndex: Math.max(0, selectedDayIndex),
+      dayIndex: Math.max(0, dayCursorIndex),
       buttonCount: candidates.length
     };
+  }
+
+  function syncDayCursor(days, startIndex) {
+    const signature = days.map((day) => extractDayDateLabel(day) || compactText(day).slice(0, 40)).join("|");
+    if (signature !== dayListSignature) {
+      dayListSignature = signature;
+      dayCursorIndex = -1;
+      clearCourseClickState();
+    }
+    if (dayCursorIndex < startIndex) {
+      dayCursorIndex = startIndex >= days.length ? days.length : startIndex;
+    }
+  }
+
+  function clickCourseDay(day) {
+    const now = Date.now();
+    if (now - lastDayClickAt <= 1500) {
+      return false;
+    }
+    lastDayClickAt = now;
+    clearCourseClickState();
+    return clickElement(day);
+  }
+
+  function findCourseDays() {
+    const pythonDays = Array.from(document.querySelectorAll('li[data-active="true"], li[data-active="false"]'))
+      .filter(visible);
+    if (pythonDays.length) {
+      return pythonDays;
+    }
+
+    const candidates = Array.from(document.querySelectorAll("body *"))
+      .filter((element) => {
+        const text = compactText(element);
+        if (!visible(element) || !DAY_DATE_RE.test(text) || text.length > 100) {
+          return false;
+        }
+        return /完成\s*\d+\s*\/\s*\d+/.test(text)
+          || /(^|[-_\s])(day|date|schedule|week|task)([-_\s]|$)/i.test(String(element.className || ""))
+          || element.matches("li, [role='tab'], [role='button'], button, a");
+      })
+      .map(dayActionElement)
+      .filter((element) => visible(element) && DAY_DATE_RE.test(compactText(element)));
+
+    const unique = uniqueElements(candidates)
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width <= viewportWidth() * 0.65 && rect.height <= viewportHeight() * 0.35;
+      });
+    const leftSide = unique.filter((element) => element.getBoundingClientRect().left < viewportWidth() * 0.45);
+    return (leftSide.length >= 2 ? leftSide : unique)
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return leftRect.top - rightRect.top || leftRect.left - rightRect.left;
+      });
+  }
+
+  function dayActionElement(element) {
+    let current = element;
+    for (let depth = 0; current && current !== document.body && depth < 5; depth += 1) {
+      const text = compactText(current);
+      const style = window.getComputedStyle(current);
+      const className = String(current.className || "");
+      if (text.length > 140) {
+        return element;
+      }
+      if (
+        current.matches("li, button, a, [role='tab'], [role='button'], [data-active]")
+        || style.cursor === "pointer"
+        || /(^|[-_\s])(day|date|schedule|week|task|item|active)([-_\s]|$)/i.test(className)
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return element;
+  }
+
+  function findSelectedCourseDayIndex(days) {
+    let selected = days.findIndex((day) => day.getAttribute("data-active") === "true");
+    if (selected >= 0) {
+      return selected;
+    }
+    selected = days.findIndex((day) => {
+      const className = String(day.className || "");
+      const ariaSelected = day.getAttribute("aria-selected");
+      return ariaSelected === "true" || /\b(active|selected|current|checked)\b/i.test(className);
+    });
+    if (selected >= 0) {
+      return selected;
+    }
+    const currentDate = currentTaskDateLabel();
+    if (!currentDate) {
+      return -1;
+    }
+    return days.findIndex((day) => extractDayDateLabel(day) === currentDate);
+  }
+
+  function currentTaskDateLabel() {
+    const nodes = Array.from(document.querySelectorAll("body *")).filter(visible);
+    for (const node of nodes) {
+      const text = compactText(node);
+      if (text.length <= 80 && /学习任务|课程安排|任务/.test(text)) {
+        const label = extractDayDateLabel(node);
+        if (label) {
+          return label;
+        }
+      }
+    }
+    return "";
+  }
+
+  function extractDayDateLabel(element) {
+    const match = DAY_DATE_RE.exec(compactText(element));
+    if (!match) {
+      return "";
+    }
+    return `${Number(match[1])}月${Number(match[2])}日`;
   }
 
   function markStaleLessonClick() {
