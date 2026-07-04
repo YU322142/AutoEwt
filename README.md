@@ -75,6 +75,26 @@ day_to_start_on: 1
 > 
 > 如果您找到了稳定复现的方法，欢迎提 issue 报告。
 
+## GUI 界面
+
+GUI 使用 `PySide6-Fluent-Widgets`，仅考虑 Windows 适配。GUI 是独立入口，核心自动化和命令行入口仍然保留。
+
+```powershell
+uv sync --extra gui
+uv run python src/gui.py
+```
+
+如果希望双击启动且不显示外部命令行窗口，可以运行 `src/gui.pyw`。GUI 内置控制台会显示日志、异常和自动重启信息，视频播放进度会显示在窗口进度条中。
+
+## 无 GUI 启动
+
+```powershell
+uv sync
+uv run python src/main.py
+```
+
+程序异常崩溃后会自动等待并重启；只有正常完成或用户手动停止时才结束。
+
 ## 开发环境
 
 - Python 3.12

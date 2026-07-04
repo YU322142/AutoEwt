@@ -9,13 +9,14 @@ import warnings
 
 
 from selenium.common import StaleElementReferenceException, InvalidSessionIdException, NoSuchElementException
-from tqdm import tqdm, TqdmWarning
+from tqdm import TqdmWarning
 
 
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.common.by import By
 
 from auto_base import AutoBase
+from progress import ProgressTqdm
 
 warnings.filterwarnings('ignore', category=TqdmWarning)
 
@@ -93,7 +94,7 @@ class AutoVideo(AutoBase):
 
 
     def _create_pbar(self, duration):
-            return tqdm(total=duration, desc='播放进度', ncols=100, unit_scale=True,
+            return ProgressTqdm(total=duration, title='视频播放进度', unit_label='秒', desc='播放进度', ncols=100, unit_scale=True,
                         bar_format='{l_bar}{bar}| {n_fmt}秒/{total_fmt}秒')
 
 

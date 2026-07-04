@@ -6,6 +6,7 @@ import os
 import logging
 import time
 import subprocess
+import shlex
 from abc import ABC, abstractmethod
 from functools import cache
 
@@ -13,6 +14,27 @@ import yaml
 from selenium import webdriver
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.common.by import By
+
+
+DEFAULT_CONFIG = {
+    'browser': 'Chrome',
+    'driver_path': r'.\chromedriver.exe',
+    'browser_binary': r'.\chrome-win64\chrome.exe',
+    'mode': 'video',
+    'options': '--mute-audio --headless',
+    'choose_correctly': True,
+    'report_id': '',
+    'day_to_start_on': 1,
+    'delay_multiplier': 1.0,
+}
+
+
+def _to_bool(value, default=False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
 
 
 @cache
@@ -32,11 +54,15 @@ def read_config() -> dict:
     """
     if not os.path.exists('config.yml'):
         logging.error('配置文件 config.yml 不存在，请检查！')
-        exit(1)
+        raise FileNotFoundError('config.yml')
     with open('config.yml', encoding='utf-8') as f:
-        config = yaml.load(f, yaml.FullLoader)
+        config = DEFAULT_CONFIG | (yaml.load(f, yaml.FullLoader) or {})
         # 密码可能是纯数字
-        config['password'] = str(config['password'])
+        config['password'] = str(config.get('password', ''))
+        config['username'] = str(config.get('username', ''))
+        config['list_url'] = str(config.get('list_url', ''))
+        config['report_id'] = str(config.get('report_id', ''))
+        config['choose_correctly'] = _to_bool(config.get('choose_correctly'), True)
         # 如果转换延迟倍率为浮点数，失败（不存在或不合法）则报错并默认1.0
         try:
             config['delay_multiplier'] = float(config.get('delay_multiplier'))
@@ -47,30 +73,44 @@ def read_config() -> dict:
             logging.info('配置文件中未设置 delay_multiplier，将使用默认值 1.0')
             config['delay_multiplier'] = 1.0
         # 便携版特有默认配置
-        config['browser'] = 'Chrome'
-        config['driver_path'] = r'.\chromedriver.exe'
-        config['mode'] = 'video'
-        config['options'] = '--mute-audio --headless'
-        config['day_to_start_on'] = 1
+        try:
+            config['day_to_start_on'] = max(1, int(config.get('day_to_start_on', 1)))
+        except (TypeError, ValueError):
+            logging.warning('Invalid day_to_start_on in config.yml, fallback to 1')
+            config['day_to_start_on'] = 1
         logging.info('成功读取到配置文件')
     return config
+
+
+def clear_config_cache() -> None:
+    read_config.cache_clear()
 
 
 class AutoBase(ABC):
     def __init__(self):
         self.config = read_config()
         self.mode = self.config['mode']
-        self.driver = self.init_driver()
+        self.driver = None
+        try:
+            self.driver = self.init_driver()
+            self.token = self.login()
+        except Exception:
+            if self.driver:
+                self.driver.quit()
+            raise
 
-        self.token = self.login()
+    def run(self) -> None:
         self.finish_days_list()
 
     def init_driver(self) -> webdriver.Edge:
         browser = self.config['browser']
         options = getattr(webdriver, browser.lower()).options.Options()
-        options.add_argument(self.config['options'])
+        for argument in shlex.split(str(self.config.get('options', ''))):
+            options.add_argument(argument)
         #Chrome相对路径
-        options.binary_location = r'.\chrome-win64\chrome.exe'
+        browser_binary = str(self.config.get('browser_binary', '')).strip().strip('"')
+        if browser_binary and os.path.exists(browser_binary):
+            options.binary_location = browser_binary
         #进一步把Chromedriver与Chrome输出丢进垃圾桶里面
         service = getattr(webdriver, browser.lower()).service.Service(
             self.config['driver_path']
@@ -85,7 +125,7 @@ class AutoBase(ABC):
                 kwargs['stdout'] = subprocess.DEVNULL
                 kwargs['stderr'] = subprocess.DEVNULL
                 kwargs['creationflags'] = (
-                        kwargs.get('creationflags', 0) | subprocess.CREATE_NO_WINDOW
+                        kwargs.get('creationflags', 0) | getattr(subprocess, 'CREATE_NO_WINDOW', 0)
                 )
                 super().__init__(*args, **kwargs)
 

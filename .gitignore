@@ -174,3 +174,8 @@ cython_debug/
 config.yml
 log/
 /src/chrome-win64
+
+# Android / Gradle local state
+.gradle/
+.kotlin/
+local.properties

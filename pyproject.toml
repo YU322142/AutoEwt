@@ -12,6 +12,12 @@ dependencies = [
     "tqdm~=4.67.3",
 ]
 
+[project.optional-dependencies]
+gui = [
+    "pyside6-fluent-widgets~=1.11.2",
+    "rinui~=0.4.0",
+]
+
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
