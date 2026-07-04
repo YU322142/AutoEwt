@@ -6,8 +6,9 @@
   const STEP_VIDEO = "video";
   const DONE_RE = /已学完|已完成|已结束|已提交|已批改/;
   const EXPIRED_RE = /已截止|已过期|已失效|超时/;
-  const COURSE_ACTION_RE = /去学习|开始学习|继续学习|播放|去收听|去查看|学\s*\d+%/;
-  const EXACT_COURSE_ACTION_RE = /^(去学习|开始学习|继续学习|播放|去收听|去查看|学\s*\d+%)$/;
+  const STUDY_PROGRESS_RE = /学\s*\d+(?:\.\d+)?\s*[%％]/;
+  const COURSE_ACTION_RE = /去学习|开始学习|继续学习|播放|去收听|去查看|学\s*\d+(?:\.\d+)?\s*[%％]/;
+  const EXACT_COURSE_ACTION_RE = /^(去学习|开始学习|继续学习|播放|去收听|去查看|学\s*\d+(?:\.\d+)?\s*[%％])$/;
   const CHECKPOINT_ACTION_RE = /我知道了|知道了|点击通过检查|通过检查|继续播放|继续学习|跳过|确定|确认/;
   const PYTHON_CHECKPOINT_ACTION_RE = /点击通过检查|跳过/;
   const PAUSED_CHECKPOINT_ACTION_RE = /我知道了|知道了|通过检查|继续播放|继续学习|确定|确认/;
@@ -16,6 +17,7 @@
   const DEFAULT_AUTOMATION_DELAY = 1500;
   const DAY_SWITCH_DELAY = 2500;
   const COURSE_PROBE_RETRY_DELAY = 10000;
+  const EXACT_STUDY_PROGRESS_RE = /^学\s*\d+(?:\.\d+)?\s*[%％]$/;
   const missedCheckpointReplayElements = new WeakSet();
 
   let port = null;
@@ -1116,10 +1118,10 @@
     if (/去学习|开始学习|继续学习/.test(text)) {
       return 0;
     }
-    if (/^学\s*\d+%$/.test(text)) {
+    if (EXACT_STUDY_PROGRESS_RE.test(text)) {
       return 1;
     }
-    if (/学\s*\d+%/.test(text)) {
+    if (STUDY_PROGRESS_RE.test(text)) {
       return 2;
     }
     if (/播放/.test(text)) {

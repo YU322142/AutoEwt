@@ -34,6 +34,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -42,7 +43,6 @@ import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -486,7 +486,7 @@ private fun LogPanel(state: AutoEwtUiState, modifier: Modifier = Modifier) {
                     )
                 }
                 if (!atBottom) {
-                    TextButton(
+                    IconButton(
                         onClick = {
                             followTail = true
                             scope.launch {
@@ -494,12 +494,18 @@ private fun LogPanel(state: AutoEwtUiState, modifier: Modifier = Modifier) {
                             }
                         },
                         modifier = Modifier
+                            .size(44.dp)
                             .align(Alignment.BottomEnd)
                             .padding(6.dp)
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(22.dp))
                             .background(MaterialTheme.colorScheme.surface)
                     ) {
-                        Text("跳到最新")
+                        Icon(
+                            painter = painterResource(R.drawable.ic_arrow_down),
+                            contentDescription = "跳到最新日志",
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
             }
