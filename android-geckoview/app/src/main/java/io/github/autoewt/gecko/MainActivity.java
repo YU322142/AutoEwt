@@ -1,12 +1,16 @@
 package io.github.autoewt.gecko;
 
+import android.Manifest;
 import android.app.AlarmManager;
 import android.app.PendingIntent;
 import android.content.SharedPreferences;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.text.InputType;
 import android.util.Log;
@@ -59,6 +63,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private static final String KEY_AUTO_SUBMIT_LOGIN = "auto_submit_login";
     private static final String KEY_DESKTOP_MODE = "desktop_mode";
     private static final String KEY_AUTOMATION_RUNNING = "automation_running";
+    private static final String KEY_BACKGROUND_KEEP_ALIVE = "background_keep_alive";
+    private static final String KEY_OOBE_DONE = "oobe_done";
+    private static final String KEY_NOTIFICATION_PERMISSION_REQUESTED = "notification_permission_requested";
 
     private static final String MODE_VIDEO = "video";
     private static final String MODE_PAPER = "paper";
@@ -66,6 +73,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private static final String HOMEWORK_DISCOVERY_URL = "https://teacher.ewt360.com/ewtbend/bend/index/index.html#/student/homework";
     private static final String EXTENSION_URI = "resource://android/assets/autoewt/";
     private static final String EXTENSION_ID = "autoewt-geckoview@local";
+    private static final int REQUEST_POST_NOTIFICATIONS = 41;
 
     private GeckoRuntime runtime;
     private GeckoSession session;
@@ -112,6 +120,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private CheckBox autoFillLoginCheck;
     private CheckBox autoSubmitLoginCheck;
     private CheckBox desktopModeCheck;
+    private CheckBox backgroundKeepAliveCheck;
+    private PowerManager.WakeLock automationWakeLock;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -130,6 +140,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         installBridge();
         showBrowserPage();
         updateAutomationButtons();
+        syncOobeState();
+        syncBackgroundKeepAlive();
         load(lastUrl);
     }
 
@@ -169,8 +181,30 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        updateNotificationPermissionState();
+        syncBackgroundKeepAlive();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (prefs != null && prefs.getBoolean(KEY_AUTOMATION_RUNNING, false)) {
+            log("任务运行中，已退到后台；需要结束请先点击停止");
+            moveTaskToBack(true);
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    @Override
     protected void onDestroy() {
         super.onDestroy();
+        boolean running = prefs != null && prefs.getBoolean(KEY_AUTOMATION_RUNNING, false);
+        if (!running || isFinishing()) {
+            releaseAutomationWakeLock();
+            stopBackgroundService();
+        }
         while (!parentSessions.isEmpty()) {
             try {
                 parentSessions.pop().close();
@@ -401,6 +435,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         autoSubmitLoginCheck = addCheckRow(form, "填入后自动点击登录按钮");
         desktopModeCheck = addCheckRow(form, "使用桌面浏览器模式打开网页");
 
+        addSectionTitle(form, "后台运行");
+        backgroundKeepAliveCheck = addCheckRow(form, "运行时显示常驻通知并保持 CPU 唤醒");
+
         LinearLayout buttonRow = new LinearLayout(this);
         buttonRow.setOrientation(LinearLayout.HORIZONTAL);
         buttonRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -630,6 +667,26 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         saveConfigFromForm(false);
         showBrowserPage();
         openConfiguredCourse();
+    }
+
+    @Override
+    public void dismissOobeFromUi() {
+        prefs.edit().putBoolean(KEY_OOBE_DONE, true).apply();
+        if (uiState != null) {
+            uiState.setOobeVisible(false);
+        }
+    }
+
+    @Override
+    public void openConfigFromOobeFromUi() {
+        dismissOobeFromUi();
+        showConfigPage();
+    }
+
+    @Override
+    public void requestNotificationPermissionFromUi() {
+        requestPostNotificationsIfNeeded(true);
+        updateNotificationPermissionState();
     }
 
     private void createRuntime() {
@@ -992,6 +1049,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             uiState.setStatus("自动刷课已启动");
         }
         updateAutomationButtons();
+        syncBackgroundKeepAlive();
         log("自动刷课已启动");
         closeAllChildSessions("start");
         showBrowserPage();
@@ -1012,6 +1070,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         updateAutomationButtons();
         sendAutomationCommand("stop");
         closeAllChildSessions("stop");
+        syncBackgroundKeepAlive();
         log("自动刷课已停止");
     }
 
@@ -1032,11 +1091,135 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         if (uiState != null) {
             uiState.setAutomationRunning(running);
         }
+        syncBackgroundStateIntoUi();
         if (startAutomationButton == null || stopAutomationButton == null) {
             return;
         }
         startAutomationButton.setEnabled(!running);
         stopAutomationButton.setEnabled(running);
+    }
+
+    private void syncOobeState() {
+        if (uiState == null) {
+            return;
+        }
+        boolean running = prefs.getBoolean(KEY_AUTOMATION_RUNNING, false);
+        uiState.setOobeVisible(!running && !prefs.getBoolean(KEY_OOBE_DONE, false));
+        syncBackgroundStateIntoUi();
+    }
+
+    private void syncBackgroundStateIntoUi() {
+        if (uiState == null || prefs == null) {
+            return;
+        }
+        uiState.setBackgroundKeepAlive(prefs.getBoolean(KEY_BACKGROUND_KEEP_ALIVE, true));
+        uiState.setNotificationPermissionGranted(hasNotificationPermission());
+    }
+
+    private void updateNotificationPermissionState() {
+        if (uiState != null) {
+            uiState.setNotificationPermissionGranted(hasNotificationPermission());
+        }
+    }
+
+    private void syncBackgroundKeepAlive() {
+        boolean running = prefs != null && prefs.getBoolean(KEY_AUTOMATION_RUNNING, false);
+        boolean keepAlive = prefs != null && prefs.getBoolean(KEY_BACKGROUND_KEEP_ALIVE, true);
+        syncBackgroundStateIntoUi();
+        if (running && keepAlive) {
+            requestPostNotificationsIfNeeded(false);
+            startBackgroundService();
+            acquireAutomationWakeLock();
+        } else {
+            stopBackgroundService();
+            releaseAutomationWakeLock();
+        }
+    }
+
+    private void startBackgroundService() {
+        Intent intent = new Intent(this, AutoEwtForegroundService.class);
+        intent.setAction(AutoEwtForegroundService.ACTION_START);
+        intent.putExtra(AutoEwtForegroundService.EXTRA_STATUS, backgroundNotificationStatus());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent);
+        } else {
+            startService(intent);
+        }
+    }
+
+    private void stopBackgroundService() {
+        Intent intent = new Intent(this, AutoEwtForegroundService.class);
+        intent.setAction(AutoEwtForegroundService.ACTION_STOP);
+        try {
+            startService(intent);
+        } catch (RuntimeException ignored) {
+            stopService(new Intent(this, AutoEwtForegroundService.class));
+        }
+    }
+
+    private String backgroundNotificationStatus() {
+        String mode = prefs.getString(KEY_MODE, MODE_VIDEO);
+        String modeText = MODE_PAPER.equals(mode) ? "做题" : "刷课";
+        return modeText + "运行中，点击返回浏览器界面";
+    }
+
+    private void acquireAutomationWakeLock() {
+        if (automationWakeLock != null && automationWakeLock.isHeld()) {
+            return;
+        }
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        if (powerManager == null) {
+            return;
+        }
+        automationWakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "AutoEwt:AutomationKeepAlive"
+        );
+        automationWakeLock.setReferenceCounted(false);
+        automationWakeLock.acquire();
+    }
+
+    private void releaseAutomationWakeLock() {
+        if (automationWakeLock == null) {
+            return;
+        }
+        try {
+            if (automationWakeLock.isHeld()) {
+                automationWakeLock.release();
+            }
+        } catch (RuntimeException ignored) {
+        }
+        automationWakeLock = null;
+    }
+
+    private void requestPostNotificationsIfNeeded(boolean force) {
+        if (Build.VERSION.SDK_INT < 33 || hasNotificationPermission()) {
+            return;
+        }
+        if (!force && prefs.getBoolean(KEY_NOTIFICATION_PERMISSION_REQUESTED, false)) {
+            return;
+        }
+        prefs.edit().putBoolean(KEY_NOTIFICATION_PERMISSION_REQUESTED, true).apply();
+        requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_POST_NOTIFICATIONS);
+    }
+
+    private boolean hasNotificationPermission() {
+        return Build.VERSION.SDK_INT < 33
+                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_POST_NOTIFICATIONS) {
+            updateNotificationPermissionState();
+            if (hasNotificationPermission()) {
+                log("通知权限已允许，后台运行通知可正常显示");
+            } else {
+                log("通知权限未开启，后台运行保活能力会降低");
+            }
+            syncBackgroundKeepAlive();
+        }
     }
 
     private void sendConfigToPage(boolean verbose) {
@@ -1163,6 +1346,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         boolean autoFillLogin = prefs.getBoolean(KEY_AUTO_FILL_LOGIN, true);
         boolean autoSubmitLogin = prefs.getBoolean(KEY_AUTO_SUBMIT_LOGIN, true);
         boolean desktopMode = prefs.getBoolean(KEY_DESKTOP_MODE, true);
+        boolean backgroundKeepAlive = prefs.getBoolean(KEY_BACKGROUND_KEEP_ALIVE, true);
 
         if (uiState != null) {
             uiState.setUsername(username);
@@ -1175,6 +1359,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             uiState.setAutoFillLogin(autoFillLogin);
             uiState.setAutoSubmitLogin(autoSubmitLogin);
             uiState.setDesktopMode(desktopMode);
+            uiState.setBackgroundKeepAlive(backgroundKeepAlive);
+            uiState.setNotificationPermissionGranted(hasNotificationPermission());
         }
 
         if (usernameInput == null) {
@@ -1194,6 +1380,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         autoFillLoginCheck.setChecked(autoFillLogin);
         autoSubmitLoginCheck.setChecked(autoSubmitLogin);
         desktopModeCheck.setChecked(desktopMode);
+        if (backgroundKeepAliveCheck != null) {
+            backgroundKeepAliveCheck.setChecked(backgroundKeepAlive);
+        }
     }
 
     private void saveConfigFromForm(boolean silent) {
@@ -1208,6 +1397,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         boolean autoFillLogin;
         boolean autoSubmitLogin;
         boolean desktopMode;
+        boolean backgroundKeepAlive;
         if (uiState != null) {
             username = uiState.getUsername().trim();
             password = uiState.getPassword();
@@ -1219,6 +1409,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             autoFillLogin = uiState.getAutoFillLogin();
             autoSubmitLogin = uiState.getAutoSubmitLogin();
             desktopMode = uiState.getDesktopMode();
+            backgroundKeepAlive = uiState.getBackgroundKeepAlive();
         } else {
             username = usernameInput.getText().toString().trim();
             password = passwordInput.getText().toString();
@@ -1230,6 +1421,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             autoFillLogin = autoFillLoginCheck.isChecked();
             autoSubmitLogin = autoSubmitLoginCheck.isChecked();
             desktopMode = desktopModeCheck.isChecked();
+            backgroundKeepAlive = backgroundKeepAliveCheck == null || backgroundKeepAliveCheck.isChecked();
         }
 
         prefs.edit()
@@ -1243,18 +1435,21 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 .putBoolean(KEY_AUTO_FILL_LOGIN, autoFillLogin)
                 .putBoolean(KEY_AUTO_SUBMIT_LOGIN, autoSubmitLogin)
                 .putBoolean(KEY_DESKTOP_MODE, desktopMode)
+                .putBoolean(KEY_BACKGROUND_KEEP_ALIVE, backgroundKeepAlive)
                 .apply();
 
         if (uiState != null) {
             uiState.setListUrl(listUrl);
             uiState.setMode(mode);
             uiState.setDayToStartOn(String.valueOf(dayToStartOn));
+            uiState.setBackgroundKeepAlive(backgroundKeepAlive);
         }
         if (listUrlInput != null) {
             listUrlInput.setText(listUrl);
             dayInput.setText(String.valueOf(dayToStartOn));
         }
         updateAutomationButtons();
+        syncBackgroundKeepAlive();
         sendConfigToPage(!silent);
         if (!silent) {
             log("配置已保存：模式=" + (MODE_PAPER.equals(mode) ? "做题" : "刷课"));
@@ -1278,6 +1473,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         config.put(KEY_AUTO_SUBMIT_LOGIN, prefs.getBoolean(KEY_AUTO_SUBMIT_LOGIN, true));
         config.put(KEY_DESKTOP_MODE, prefs.getBoolean(KEY_DESKTOP_MODE, true));
         config.put(KEY_AUTOMATION_RUNNING, prefs.getBoolean(KEY_AUTOMATION_RUNNING, false));
+        config.put(KEY_BACKGROUND_KEEP_ALIVE, prefs.getBoolean(KEY_BACKGROUND_KEEP_ALIVE, true));
         config.put("child_session_active", !parentSessions.isEmpty());
         config.put("child_task_kind", parentSessions.isEmpty() ? "" : childTaskKind);
         return config;

@@ -149,6 +149,9 @@ class AutoEwtUiState {
     var autoFillLogin by mutableStateOf(true)
     var autoSubmitLogin by mutableStateOf(true)
     var desktopMode by mutableStateOf(true)
+    var backgroundKeepAlive by mutableStateOf(true)
+    var notificationPermissionGranted by mutableStateOf(true)
+    var oobeVisible by mutableStateOf(false)
     var totalCourseDay by mutableIntStateOf(0)
     var totalCourseDays by mutableIntStateOf(0)
     var listUrlDiscoveryRunning by mutableStateOf(false)
@@ -211,6 +214,9 @@ interface AutoEwtUiController {
     fun saveAndOpenFromUi()
     fun selectListUrlCandidateFromUi(candidateId: String, title: String)
     fun cancelListUrlDiscoveryFromUi()
+    fun dismissOobeFromUi()
+    fun openConfigFromOobeFromUi()
+    fun requestNotificationPermissionFromUi()
 }
 
 object AutoEwtComposeUi {
@@ -250,23 +256,27 @@ private fun AutoEwtApp(controller: AutoEwtUiController) {
         color = MaterialTheme.colorScheme.background
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                AppHeader(controller, onHelpClick = { helpVisible = true })
-                PrimaryTabRow(selectedTabIndex = state.page) {
-                    Tab(
-                        selected = state.page == AutoEwtUiState.PAGE_BROWSER,
-                        onClick = controller::showBrowserPage,
-                        text = { Text("浏览器") }
-                    )
-                    Tab(
-                        selected = state.page == AutoEwtUiState.PAGE_CONFIG,
-                        onClick = controller::showConfigPage,
-                        text = { Text("配置") }
-                    )
-                }
-                when (state.page) {
-                    AutoEwtUiState.PAGE_CONFIG -> ConfigScreen(controller)
-                    else -> BrowserScreen(controller)
+            if (state.oobeVisible) {
+                OobeScreen(controller, onHelpClick = { helpVisible = true })
+            } else {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    AppHeader(controller, onHelpClick = { helpVisible = true })
+                    PrimaryTabRow(selectedTabIndex = state.page) {
+                        Tab(
+                            selected = state.page == AutoEwtUiState.PAGE_BROWSER,
+                            onClick = controller::showBrowserPage,
+                            text = { Text("浏览器") }
+                        )
+                        Tab(
+                            selected = state.page == AutoEwtUiState.PAGE_CONFIG,
+                            onClick = controller::showConfigPage,
+                            text = { Text("配置") }
+                        )
+                    }
+                    when (state.page) {
+                        AutoEwtUiState.PAGE_CONFIG -> ConfigScreen(controller)
+                        else -> BrowserScreen(controller)
+                    }
                 }
             }
             if (state.listUrlChoiceVisible) {
@@ -1005,6 +1015,429 @@ private fun ListUrlCandidateDialog(controller: AutoEwtUiController) {
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OobeScreen(controller: AutoEwtUiController, onHelpClick: () -> Unit) {
+    val state = controller.state
+    val titles = listOf("欢迎", "后台运行", "账号与课程", "运行方式", "准备启动")
+    var step by remember { mutableIntStateOf(0) }
+    var stepHelpVisible by remember { mutableStateOf(false) }
+    val lastStep = titles.lastIndex
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "AutoEwt 初始化",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "第 ${step + 1} 步，共 ${titles.size} 步 · ${titles[step]}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            TextButton(onClick = controller::dismissOobeFromUi) {
+                Text("跳过")
+            }
+            IconButton(onClick = { stepHelpVisible = true }) {
+                ActionIcon(R.drawable.ic_help, contentDescription = "帮助", size = 20.dp)
+            }
+        }
+
+        UnifiedProgressBar(
+            progress = (step + 1).toFloat() / titles.size.toFloat(),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Surface(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                when (step) {
+                    0 -> OobeWelcomeStep()
+                    1 -> OobeBackgroundStep(controller)
+                    2 -> OobeAccountStep(controller)
+                    3 -> OobeModeStep(controller)
+                    else -> OobeReadyStep(controller)
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
+                onClick = { step = (step - 1).coerceAtLeast(0) },
+                enabled = step > 0,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("上一步")
+            }
+            if (step < lastStep) {
+                Button(
+                    onClick = {
+                        if (step == 2 || step == 3) {
+                            controller.saveConfigFromUi()
+                        }
+                        step += 1
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("下一步")
+                }
+            } else {
+                Button(
+                    onClick = {
+                        controller.saveConfigFromUi()
+                        controller.dismissOobeFromUi()
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("完成")
+                }
+            }
+        }
+    }
+    if (stepHelpVisible) {
+        OobeStepHelpDialog(
+            step = step,
+            title = titles[step],
+            onDismiss = { stepHelpVisible = false }
+        )
+    }
+}
+
+@Composable
+private fun OobeStepHelpDialog(
+    step: Int,
+    title: String,
+    onDismiss: () -> Unit
+) {
+    val paragraphs = when (step) {
+        0 -> listOf(
+            "这个向导会带你完成首次配置，不会立即开始任务。",
+            "如果你已经知道怎么用，可以点右上角“跳过”，之后仍能在配置页修改所有选项。"
+        )
+        1 -> listOf(
+            "后台保活用于自动化运行期间：应用会显示常驻通知，并保持 CPU 唤醒，降低息屏后停摆的概率。",
+            "它不是无限制后台运行。请不要从最近任务划掉应用；部分系统还需要在系统设置里允许后台活动或关闭电池优化。"
+        )
+        2 -> listOf(
+            "课程列表 URL 可以手动粘贴，也可以先填写账号密码，再点“登录后自动获取课程列表 URL”。",
+            "自动获取会打开作业页，登录后列出可选任务。验证码或短信验证需要你在浏览器里手动完成。"
+        )
+        3 -> listOf(
+            "刷课模式会进入课程任务，处理视频、FM、检查点、暂停提示以及漏看检查点后的重刷入口。",
+            "做题模式会按做题入口运行，report_id 不确定时可以先留空。桌面浏览器模式通常最接近电脑端表现。"
+        )
+        else -> listOf(
+            "“保存进入主界面”只保存配置；“保存并打开课程”会进入课程列表；“开始运行”会保存并立刻启动自动化。",
+            "启动后可以隐藏浏览器或日志，隐藏浏览器不会暂停自动化。"
+        )
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(8.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = {
+            Text(
+                text = "$title 帮助",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                paragraphs.forEach { paragraph ->
+                    HelpParagraph(paragraph)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("知道了")
+            }
+        }
+    )
+}
+
+@Composable
+private fun OobeWelcomeStep() {
+    HelpSectionTitle("这是什么")
+    HelpParagraph("Android 版内置 GeckoView 浏览器内核，不需要用户安装浏览器驱动。UI 只负责配置、查看浏览器和进度；自动化逻辑在浏览器脚本中运行。")
+    HelpSectionTitle("使用边界")
+    HelpParagraph("本项目用于浏览器自动化与跨平台客户端技术研究。请遵守学校纪律、平台规则和法律法规。")
+    HelpSectionTitle("接下来会做什么")
+    OobeStep("1", "确认后台运行方式，避免息屏或退到后台后任务过早停止。")
+    OobeStep("2", "填写账号、密码和课程列表 URL，或稍后通过自动获取 URL 来选择任务。")
+    OobeStep("3", "选择刷课或做题，保留默认桌面浏览器模式以贴近电脑端页面。")
+}
+
+@Composable
+private fun OobeBackgroundStep(controller: AutoEwtUiController) {
+    val state = controller.state
+    HelpSectionTitle("后台保活")
+    HelpParagraph("开启后，自动化运行期间会显示常驻通知并保持 CPU 唤醒，降低退到后台、息屏后被系统清理的概率。")
+    CheckRow(
+        checked = state.backgroundKeepAlive,
+        onCheckedChange = { state.backgroundKeepAlive = it },
+        text = "运行时启用后台保活"
+    )
+    if (state.backgroundKeepAlive) {
+        if (state.notificationPermissionGranted) {
+            OobeStatusLine("通知权限已允许，运行中会显示常驻通知。")
+        } else {
+            WarningBox("Android 13 及以上需要通知权限；不允许通知时，后台保活效果会降低。")
+            OutlinedButton(onClick = controller::requestNotificationPermissionFromUi) {
+                ActionIcon(R.drawable.ic_help)
+                Spacer(Modifier.width(6.dp))
+                Text("允许后台运行通知")
+            }
+        }
+    }
+    WarningBox("请不要从最近任务中划掉应用。部分系统的省电策略仍可能限制浏览器自动化，长时间运行建议接入电源。")
+}
+
+@Composable
+private fun OobeAccountStep(controller: AutoEwtUiController) {
+    val state = controller.state
+    HelpSectionTitle("登录信息")
+    OutlinedTextField(
+        value = state.username,
+        onValueChange = { state.username = it },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        label = { Text("账号") }
+    )
+    OutlinedTextField(
+        value = state.password,
+        onValueChange = { state.password = it },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        label = { Text("密码") },
+        visualTransformation = PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+    )
+    HelpSectionTitle("课程列表 URL")
+    OutlinedTextField(
+        value = state.listUrl,
+        onValueChange = { state.listUrl = it },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        label = { Text("课程列表 URL") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+    )
+    Button(
+        onClick = {
+            controller.saveConfigFromUi()
+            controller.discoverListUrlFromUi()
+        },
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = ButtonDefaults.ButtonWithIconContentPadding
+    ) {
+        ActionIcon(R.drawable.ic_probe)
+        Spacer(Modifier.width(6.dp))
+        Text("登录后自动获取课程列表 URL")
+    }
+    HelpParagraph("如果出现验证码或短信验证，需要在浏览器页面中手动完成。应用不会绕过验证。")
+}
+
+@Composable
+private fun OobeModeStep(controller: AutoEwtUiController) {
+    val state = controller.state
+    HelpSectionTitle("运行模式")
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        FilterChip(
+            selected = state.mode == "video",
+            onClick = { state.mode = "video" },
+            label = { Text("刷课") },
+            leadingIcon = { ActionIcon(R.drawable.ic_play) }
+        )
+        FilterChip(
+            selected = state.mode == "paper",
+            onClick = { state.mode = "paper" },
+            label = { Text("做题") },
+            leadingIcon = { ActionIcon(R.drawable.ic_course) }
+        )
+    }
+    OutlinedTextField(
+        value = state.dayToStartOn,
+        onValueChange = { state.dayToStartOn = it.filter(Char::isDigit) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        label = { Text("从第几天开始") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+    )
+    CheckRow(
+        checked = state.autoFillLogin,
+        onCheckedChange = { state.autoFillLogin = it },
+        text = "进入登录页后自动填入账号密码"
+    )
+    CheckRow(
+        checked = state.autoSubmitLogin,
+        onCheckedChange = { state.autoSubmitLogin = it },
+        text = "填入后自动点击登录按钮"
+    )
+    CheckRow(
+        checked = state.desktopMode,
+        onCheckedChange = { state.desktopMode = it },
+        text = "使用桌面浏览器模式"
+    )
+    if (state.mode == "paper") {
+        OutlinedTextField(
+            value = state.reportId,
+            onValueChange = { state.reportId = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("report_id，可先留空") }
+        )
+        CheckRow(
+            checked = state.chooseCorrectly,
+            onCheckedChange = { state.chooseCorrectly = it },
+            text = "做题时选择正确答案"
+        )
+    }
+    WarningBox("除非页面显示异常，建议保留桌面浏览器模式。切换后会重启 GeckoView 以应用 UA/viewport。")
+}
+
+@Composable
+private fun OobeReadyStep(controller: AutoEwtUiController) {
+    val state = controller.state
+    HelpSectionTitle("确认配置")
+    OobeSummaryLine("运行模式", if (state.mode == "paper") "做题" else "刷课")
+    OobeSummaryLine("账号", state.username.ifBlank { "未填写" })
+    OobeSummaryLine("课程列表 URL", state.listUrl.ifBlank { "未填写，可稍后自动获取" })
+    OobeSummaryLine("后台保活", if (state.backgroundKeepAlive) "开启" else "关闭")
+    OobeSummaryLine("浏览器模式", if (state.desktopMode) "桌面模式" else "移动模式")
+    WarningBox("启动后可以隐藏浏览器或日志；隐藏浏览器不会暂停自动化。")
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        OutlinedButton(onClick = {
+            controller.saveConfigFromUi()
+            controller.dismissOobeFromUi()
+        }) {
+            Text("保存进入主界面")
+        }
+        OutlinedButton(onClick = {
+            controller.dismissOobeFromUi()
+            controller.saveAndOpenFromUi()
+        }) {
+            Text("保存并打开课程")
+        }
+        Button(onClick = {
+            controller.dismissOobeFromUi()
+            controller.startAutomationFromUi()
+        }) {
+            ActionIcon(R.drawable.ic_play)
+            Spacer(Modifier.width(6.dp))
+            Text("开始运行")
+        }
+    }
+}
+
+@Composable
+private fun OobeSummaryLine(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.widthIn(min = 88.dp),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+            text = value,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun OobeStatusLine(text: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+        contentColor = MaterialTheme.colorScheme.primary
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(10.dp),
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+}
+
+@Composable
+private fun OobeStep(number: String, text: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Surface(
+            modifier = Modifier.size(24.dp),
+            shape = RoundedCornerShape(999.dp),
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+            contentColor = MaterialTheme.colorScheme.primary
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    text = number,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+        Text(
+            text = text,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
 @Composable
 private fun IconHelpDialog(onDismiss: () -> Unit) {
     val mainActions = listOf(
@@ -1359,6 +1792,21 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
                 onCheckedChange = { state.desktopMode = it },
                 text = "桌面浏览器模式"
             )
+        }
+        HorizontalDivider()
+        SectionTitle("后台运行")
+        CheckRow(
+            checked = state.backgroundKeepAlive,
+            onCheckedChange = { state.backgroundKeepAlive = it },
+            text = "运行时显示常驻通知并保持 CPU 唤醒"
+        )
+        if (state.backgroundKeepAlive && !state.notificationPermissionGranted) {
+            WarningBox("当前未允许通知权限，后台运行通知可能无法显示。Android 13 及以上建议开启。")
+            OutlinedButton(onClick = controller::requestNotificationPermissionFromUi) {
+                ActionIcon(R.drawable.ic_help)
+                Spacer(Modifier.width(6.dp))
+                Text("允许通知权限")
+            }
         }
     }
 }
