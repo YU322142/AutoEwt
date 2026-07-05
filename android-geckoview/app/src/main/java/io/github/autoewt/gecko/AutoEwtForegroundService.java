@@ -9,12 +9,14 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.util.Log;
 
 public class AutoEwtForegroundService extends Service {
     public static final String ACTION_START = "io.github.autoewt.gecko.action.START_FOREGROUND";
     public static final String ACTION_STOP = "io.github.autoewt.gecko.action.STOP_FOREGROUND";
     public static final String EXTRA_STATUS = "status";
 
+    private static final String TAG = "AutoEwtForegroundService";
     private static final String CHANNEL_ID = "autoewt_background";
     private static final int NOTIFICATION_ID = 3601;
     private boolean foregroundStarted = false;
@@ -23,17 +25,22 @@ public class AutoEwtForegroundService extends Service {
     public void onCreate() {
         super.onCreate();
         ensureNotificationChannel();
-        startForegroundSafely(buildNotification("正在准备后台保活"));
+        if (startForegroundSafely(buildNotification("正在准备后台保活"))) {
+            Log.d(TAG, "foreground service created");
+        } else {
+            Log.w(TAG, "foreground service created without foreground notification");
+        }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? ACTION_START : intent.getAction();
         if (ACTION_STOP.equals(action)) {
+            Log.d(TAG, "foreground service stop requested");
             if (foregroundStarted) {
                 stopForeground(true);
             }
-            stopSelf();
+            stopSelf(startId);
             return START_NOT_STICKY;
         }
 
@@ -42,10 +49,25 @@ public class AutoEwtForegroundService extends Service {
                 ? "自动化运行中，点击返回应用"
                 : status);
         if (!startForegroundSafely(notification)) {
+            Log.w(TAG, "foreground service could not enter foreground; stopping");
             stopSelf(startId);
             return START_NOT_STICKY;
         }
+        Log.d(TAG, "foreground service running: " + status);
         return START_STICKY;
+    }
+
+    @Override
+    public void onDestroy() {
+        Log.d(TAG, "foreground service destroyed");
+        if (foregroundStarted) {
+            try {
+                stopForeground(true);
+            } catch (RuntimeException ignored) {
+            }
+            foregroundStarted = false;
+        }
+        super.onDestroy();
     }
 
     @Override
@@ -67,11 +89,13 @@ public class AutoEwtForegroundService extends Service {
             foregroundStarted = true;
             return true;
         } catch (RuntimeException typedError) {
+            Log.w(TAG, "typed startForeground failed", typedError);
             try {
                 startForeground(NOTIFICATION_ID, notification);
                 foregroundStarted = true;
                 return true;
             } catch (RuntimeException plainError) {
+                Log.w(TAG, "plain startForeground failed", plainError);
                 foregroundStarted = false;
                 return false;
             }

@@ -1093,8 +1093,14 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         closeAllChildSessions("start");
         showBrowserPage();
         setBrowserVisibleFromUi(true);
-        sendAutomationCommand("start");
         load(listUrl);
+        if (geckoView != null) {
+            geckoView.postDelayed(() -> {
+                if (prefs.getBoolean(KEY_AUTOMATION_RUNNING, false)) {
+                    sendAutomationCommand("start");
+                }
+            }, 3500);
+        }
     }
 
     private void stopAutomation() {
@@ -1180,19 +1186,20 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         intent.setAction(AutoEwtForegroundService.ACTION_START);
         intent.putExtra(AutoEwtForegroundService.EXTRA_STATUS, backgroundNotificationStatus());
         try {
-            startService(intent);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
         } catch (RuntimeException error) {
             log("后台保活通知启动失败，继续使用 WakeLock 保底：" + error.getClass().getSimpleName());
         }
     }
 
     private void stopBackgroundService() {
-        Intent intent = new Intent(this, AutoEwtForegroundService.class);
-        intent.setAction(AutoEwtForegroundService.ACTION_STOP);
         try {
-            startService(intent);
-        } catch (RuntimeException ignored) {
             stopService(new Intent(this, AutoEwtForegroundService.class));
+        } catch (RuntimeException ignored) {
         }
     }
 

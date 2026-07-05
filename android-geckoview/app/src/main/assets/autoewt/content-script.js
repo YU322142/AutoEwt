@@ -13,6 +13,7 @@
   const PAUSED_CHECKPOINT_ACTION_RE = /我知道了|知道了|通过检查|继续播放|继续学习|确定|确认/;
   const MISSED_CHECKPOINT_RE = /错过了所有看课检测点|再认真观看一次/;
   const DAY_DATE_RE = /(\d{1,2})\s*月\s*(\d{1,2})\s*日/;
+  const DAY_INDEX_RE = /第\s*\d+\s*天/;
   const DEFAULT_AUTOMATION_DELAY = 1500;
   const DAY_SWITCH_DELAY = 2500;
   const COURSE_PROBE_RETRY_DELAY = 10000;
@@ -1420,12 +1421,11 @@
 
     const days = findCourseDays();
     const startIndex = Math.max(0, Number(config.day_to_start_on || 1) - 1);
-    syncDayCursor(days, startIndex);
-    let selectedDayIndex = findSelectedCourseDayIndex(days);
-    if (selectedDayIndex < 0 && lastDayClickAt > 0 && Date.now() - lastDayClickAt < 10000) {
-      selectedDayIndex = dayCursorIndex;
-    }
     if (!days.length) {
+      const result = clickFirstCourseCandidate(0, 0);
+      if (result.clicked || result.buttonCount > 0) {
+        return result;
+      }
       return {
         clicked: false,
         dayClicked: false,
@@ -1433,6 +1433,11 @@
         dayIndex: 0,
         buttonCount: 0
       };
+    }
+    syncDayCursor(days, startIndex);
+    let selectedDayIndex = findSelectedCourseDayIndex(days);
+    if (selectedDayIndex < 0 && lastDayClickAt > 0) {
+      selectedDayIndex = dayCursorIndex;
     }
     if (dayCursorIndex >= days.length) {
       return {
@@ -1456,46 +1461,9 @@
       };
     }
 
-    const candidates = findCourseButtonCandidates(false);
-    const candidate = candidates[0] || null;
-
-    if (candidate) {
-      if (lastLessonClickSignature === candidate.signature && location.href === lastLessonClickUrl && !document.querySelector("video")) {
-        return {
-          clicked: false,
-          dayClicked: false,
-          totalDays: days.length,
-          dayIndex: Math.max(0, dayCursorIndex),
-          buttonCount: candidates.length
-        };
-      }
-      const now = Date.now();
-      if (now - lastLessonClickAt < 5000) {
-        return {
-          clicked: false,
-          dayClicked: false,
-          totalDays: days.length,
-          dayIndex: Math.max(0, dayCursorIndex),
-          buttonCount: candidates.length
-        };
-      }
-      lastLessonClickAt = now;
-      lastLessonClickSignature = candidate.signature;
-      lastLessonClickLabel = candidate.label;
-      lastLessonClickUrl = location.href;
-      if (candidate.kind === "oneClick") {
-        finishedOneClickSignatures.add(candidate.signature);
-      }
-      const clickInfo = clickElementInfo(candidate.element);
-      requestNativeTap(clickInfo, candidate.label, "course", candidate.kind);
-      return {
-        clicked: true,
-        label: candidate.label,
-        dayClicked: false,
-        totalDays: days.length,
-        dayIndex: Math.max(0, dayCursorIndex),
-        buttonCount: candidates.length
-      };
+    const candidateResult = clickFirstCourseCandidate(days.length, Math.max(0, dayCursorIndex));
+    if (candidateResult.clicked || candidateResult.buttonCount > 0) {
+      return candidateResult;
     }
 
     const nextDayIndex = nextAvailableDayIndex(days, dayCursorIndex, startIndex);
@@ -1517,6 +1485,58 @@
       dayClicked: false,
       totalDays: days.length,
       dayIndex: Math.max(0, dayCursorIndex),
+      buttonCount: candidateResult.buttonCount
+    };
+  }
+
+  function clickFirstCourseCandidate(totalDays, dayIndex) {
+    const candidates = findCourseButtonCandidates(false);
+    const candidate = candidates[0] || null;
+
+    if (candidate) {
+      if (lastLessonClickSignature === candidate.signature && location.href === lastLessonClickUrl && !document.querySelector("video")) {
+        return {
+          clicked: false,
+          dayClicked: false,
+          totalDays,
+          dayIndex,
+          buttonCount: candidates.length
+        };
+      }
+      const now = Date.now();
+      if (now - lastLessonClickAt < 5000) {
+        return {
+          clicked: false,
+          dayClicked: false,
+          totalDays,
+          dayIndex,
+          buttonCount: candidates.length
+        };
+      }
+      lastLessonClickAt = now;
+      lastLessonClickSignature = candidate.signature;
+      lastLessonClickLabel = candidate.label;
+      lastLessonClickUrl = location.href;
+      if (candidate.kind === "oneClick") {
+        finishedOneClickSignatures.add(candidate.signature);
+      }
+      const clickInfo = clickElementInfo(candidate.element);
+      requestNativeTap(clickInfo, candidate.label, "course", candidate.kind);
+      return {
+        clicked: true,
+        label: candidate.label,
+        dayClicked: false,
+        totalDays,
+        dayIndex,
+        buttonCount: candidates.length
+      };
+    }
+
+    return {
+      clicked: false,
+      dayClicked: false,
+      totalDays,
+      dayIndex,
       buttonCount: candidates.length
     };
   }
@@ -1548,15 +1568,15 @@
 
   function findCourseDays() {
     const pythonDays = Array.from(document.querySelectorAll('li[data-active="true"], li[data-active="false"]'))
-      .filter(visible);
+      .filter(isCourseDayElement);
     if (pythonDays.length) {
-      return pythonDays;
+      return sortCourseDays(pythonDays);
     }
 
     const candidates = Array.from(document.querySelectorAll("body *"))
       .filter((element) => {
         const text = compactText(element);
-        if (!visible(element) || !DAY_DATE_RE.test(text) || text.length > 100) {
+        if (!visible(element) || !isCourseDayText(text) || text.length > 100) {
           return false;
         }
         return /完成\s*\d+\s*\/\s*\d+/.test(text)
@@ -1564,7 +1584,7 @@
           || element.matches("li, [role='tab'], [role='button'], button, a");
       })
       .map(dayActionElement)
-      .filter((element) => visible(element) && DAY_DATE_RE.test(compactText(element)));
+      .filter((element) => visible(element) && isCourseDayText(compactText(element)));
 
     const unique = uniqueElements(candidates)
       .filter((element) => {
@@ -1572,7 +1592,27 @@
         return rect.width <= viewportWidth() * 0.65 && rect.height <= viewportHeight() * 0.35;
       });
     const leftSide = unique.filter((element) => element.getBoundingClientRect().left < viewportWidth() * 0.45);
-    return (leftSide.length >= 2 ? leftSide : unique)
+    return sortCourseDays(leftSide.length >= 2 ? leftSide : unique);
+  }
+
+  function isCourseDayElement(element) {
+    if (!visible(element)) {
+      return false;
+    }
+    const text = compactText(element);
+    if (!isCourseDayText(text) || text.length > 140) {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    return rect.width <= viewportWidth() * 0.75 && rect.height <= viewportHeight() * 0.35;
+  }
+
+  function isCourseDayText(text) {
+    return DAY_DATE_RE.test(text) || DAY_INDEX_RE.test(text);
+  }
+
+  function sortCourseDays(days) {
+    return uniqueElements(days)
       .sort((left, right) => {
         const leftRect = left.getBoundingClientRect();
         const rightRect = right.getBoundingClientRect();
@@ -1636,11 +1676,16 @@
   }
 
   function extractDayDateLabel(element) {
-    const match = DAY_DATE_RE.exec(compactText(element));
-    if (!match) {
-      return "";
+    const text = compactText(element);
+    const match = DAY_DATE_RE.exec(text);
+    if (match) {
+      return `${Number(match[1])}月${Number(match[2])}日`;
     }
-    return `${Number(match[1])}月${Number(match[2])}日`;
+    const dayMatch = DAY_INDEX_RE.exec(text);
+    if (dayMatch) {
+      return dayMatch[0].replace(/\s+/g, "");
+    }
+    return "";
   }
 
   function markStaleLessonClick() {
@@ -1688,7 +1733,13 @@
     const missedReplayButtons = findMissedCheckpointReplayButtons();
     const progressCourseButtons = findStudyProgressCourseButtons();
     const fallbackButtons = findFallbackCourseButtons();
-    const elements = uniqueElements(missedReplayButtons.concat(legacyLessonButtons, legacyOneClickButtons, lessonButtons, oneClickButtons, progressCourseButtons, fallbackButtons).map(actionableElement));
+    const strictElements = uniqueElements(
+      missedReplayButtons
+        .concat(legacyLessonButtons, legacyOneClickButtons, progressCourseButtons, oneClickButtons)
+        .map(actionableElement)
+    );
+    const broadElements = uniqueElements(lessonButtons.concat(fallbackButtons).map(actionableElement));
+    const elements = uniqueElements(strictElements.concat(broadElements));
     const seenSignatures = new Set();
     return elements
       .filter((element) => visible(element))
@@ -2016,6 +2067,13 @@
     if (isMissedCheckpointReplayContext(element)) {
       return false;
     }
+    const ownText = compactText(element);
+    if (COMPLETED_STUDY_PROGRESS_RE.test(ownText)) {
+      return true;
+    }
+    if (isOpenCourseActionText(ownText)) {
+      return false;
+    }
     if (element.matches && element.matches("[disabled], [aria-disabled='true']")) {
       return true;
     }
@@ -2024,7 +2082,19 @@
       return true;
     }
     const containerText = compactText(courseContainer(element));
+    if (isOpenCourseActionText(containerText) && !COMPLETED_STUDY_PROGRESS_RE.test(containerText)) {
+      return false;
+    }
     return DONE_RE.test(containerText);
+  }
+
+  function isOpenCourseActionText(text) {
+    if (!text || DONE_RE.test(text) || COMPLETED_STUDY_PROGRESS_RE.test(text)) {
+      return false;
+    }
+    return EXACT_COURSE_ACTION_RE.test(text)
+      || COURSE_ACTION_RE.test(text)
+      || STUDY_PROGRESS_RE.test(text);
   }
 
   function isMissedCheckpointReplayContext(element) {

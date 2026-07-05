@@ -14,7 +14,8 @@
         <service
             android:name=".AutoEwtForegroundService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
 
         <activity
             android:name=".MainActivity"
