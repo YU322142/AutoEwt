@@ -988,7 +988,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         childTaskKind = "";
         listUrlDiscoveryRunning = false;
         if (uiState != null) {
-            uiState.clearCourseDayProgress();
+            uiState.clearAutomationProgress();
+            uiState.setStatus("自动刷课已启动");
         }
         updateAutomationButtons();
         log("自动刷课已启动");
@@ -1005,7 +1006,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         childTaskKind = "";
         listUrlDiscoveryRunning = false;
         if (uiState != null) {
-            uiState.clearCourseDayProgress();
+            uiState.clearAutomationProgress();
+            uiState.setStatus("自动刷课已停止");
         }
         updateAutomationButtons();
         sendAutomationCommand("stop");

@@ -5,7 +5,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -37,6 +36,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -146,6 +146,12 @@ class AutoEwtUiState {
         totalCourseDay = 0
         totalCourseDays = 0
     }
+
+    fun clearAutomationProgress() {
+        clearCourseDayProgress()
+        loadProgress = 0
+        videoStatus = ""
+    }
 }
 
 interface AutoEwtUiController {
@@ -235,6 +241,11 @@ private fun AutoEwtApp(controller: AutoEwtUiController) {
 @Composable
 private fun AppHeader(controller: AutoEwtUiController) {
     val state = controller.state
+    val subtitle = when {
+        state.listUrlDiscoveryRunning -> "正在获取课程列表 URL"
+        state.automationRunning -> "自动化正在运行"
+        else -> state.status
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -252,7 +263,7 @@ private fun AppHeader(controller: AutoEwtUiController) {
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = state.status,
+                text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -272,6 +283,8 @@ private fun AppHeader(controller: AutoEwtUiController) {
 private fun BrowserScreen(controller: AutoEwtUiController) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val wide = maxWidth >= 600.dp
+        val availableHeight = maxHeight
+        val state = controller.state
         if (wide) {
             Row(
                 modifier = Modifier
@@ -300,7 +313,9 @@ private fun BrowserScreen(controller: AutoEwtUiController) {
                 BrowserControlColumn(
                     controller = controller,
                     compact = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = availableHeight * (if (state.automationRunning) 0.64f else 0.58f))
                 )
                 BrowserWorkspace(
                     controller = controller,
@@ -319,63 +334,73 @@ private fun BrowserControlColumn(
     compact: Boolean = false
 ) {
     val state = controller.state
+    var addressExpanded by remember { mutableStateOf(!compact) }
+    val scrollModifier = if (compact) {
+        Modifier.verticalScroll(rememberScrollState())
+    } else {
+        Modifier
+    }
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surface)
+            .then(scrollModifier)
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedTextField(
-                value = state.url,
-                onValueChange = { state.url = it },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                label = { Text("地址") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+        val showAddressControls = !compact || addressExpanded || !state.automationRunning
+        if (!compact || addressExpanded) {
+            AddressBar(
+                controller = controller,
+                onCollapse = if (compact) {
+                    { addressExpanded = false }
+                } else {
+                    null
+                }
             )
-            Button(
-                onClick = { controller.openUrlFromUi(state.url) },
-                modifier = Modifier.height(56.dp),
-                contentPadding = ButtonDefaults.ButtonWithIconContentPadding
-            ) {
-                ActionIcon(R.drawable.ic_open)
-                Spacer(Modifier.width(6.dp))
-                Text("打开")
-            }
+        } else if (showAddressControls) {
+            CompactAddressRow(
+                url = state.url,
+                onExpand = { addressExpanded = true },
+                onOpen = { controller.openUrlFromUi(state.url) }
+            )
+        }
+
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            BrowserActionButtons(controller, state)
         }
 
         if (compact) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                BrowserActionButtons(controller, state)
-            }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                BrowserViewAndLogChips(controller, state)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "视图与日志",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (!showAddressControls) {
+                        TextButton(onClick = { addressExpanded = true }) {
+                            Text("地址")
+                        }
+                    }
+                }
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    BrowserViewAndLogChips(controller, state)
+                }
             }
         } else {
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                BrowserActionButtons(controller, state)
-            }
-
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -385,21 +410,7 @@ private fun BrowserControlColumn(
             }
         }
 
-        UnifiedProgressBar(
-            progress = state.loadProgress.coerceIn(0, 100) / 100f,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        CourseDayProgressPanel(state)
-
-        if (state.videoStatus.isNotBlank()) {
-            Text(
-                text = state.videoStatus,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-        }
+        RunStatusPanel(state)
 
         if (compact) {
             LogPanel(state, modifier = Modifier.fillMaxWidth())
@@ -416,19 +427,87 @@ private fun BrowserControlColumn(
 }
 
 @Composable
-private fun CourseDayProgressPanel(state: AutoEwtUiState) {
+private fun AddressBar(controller: AutoEwtUiController, onCollapse: (() -> Unit)? = null) {
+    val state = controller.state
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        OutlinedTextField(
+            value = state.url,
+            onValueChange = { state.url = it },
+            modifier = Modifier.weight(1f),
+            singleLine = true,
+            label = { Text("地址") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+        )
+        Button(
+            onClick = { controller.openUrlFromUi(state.url) },
+            modifier = Modifier.height(56.dp),
+            contentPadding = ButtonDefaults.ButtonWithIconContentPadding
+        ) {
+            ActionIcon(R.drawable.ic_open)
+            Spacer(Modifier.width(6.dp))
+            Text("打开")
+        }
+        if (onCollapse != null) {
+            TextButton(onClick = onCollapse) {
+                Text("收起")
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactAddressRow(url: String, onExpand: () -> Unit, onOpen: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = url.ifBlank { "未设置地址" },
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        TextButton(onClick = onExpand) {
+            Text("地址")
+        }
+        OutlinedButton(
+            onClick = onOpen,
+            contentPadding = ButtonDefaults.ButtonWithIconContentPadding
+        ) {
+            ActionIcon(R.drawable.ic_open)
+            Spacer(Modifier.width(6.dp))
+            Text("打开")
+        }
+    }
+}
+
+@Composable
+private fun RunStatusPanel(state: AutoEwtUiState) {
     val totalDays = state.totalCourseDays
-    if (totalDays <= 0) {
+    val hasDayProgress = totalDays > 0
+    val hasVideoProgress = state.videoStatus.isNotBlank()
+    val hasLoadProgress = state.loadProgress in 1..99
+    if (!hasDayProgress && !hasVideoProgress && !hasLoadProgress) {
         return
     }
-    val day = state.totalCourseDay.coerceIn(1, totalDays)
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -436,24 +515,70 @@ private fun CourseDayProgressPanel(state: AutoEwtUiState) {
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = "总刷课进度",
+                text = "运行状态",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.weight(1f))
             Text(
-                text = "第 $day / $totalDays 天",
+                text = if (state.automationRunning) "运行中" else "待机",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
-        UnifiedProgressBar(
-            progress = day.toFloat() / totalDays.toFloat(),
-            modifier = Modifier.fillMaxWidth()
-        )
+        if (hasDayProgress) {
+            val day = state.totalCourseDay.coerceIn(1, totalDays)
+            ProgressMetric(
+                label = "总刷课进度",
+                value = "第 $day / $totalDays 天",
+                progress = day.toFloat() / totalDays.toFloat()
+            )
+        }
+        if (hasVideoProgress) {
+            ProgressMetric(
+                label = "当前视频",
+                value = state.videoStatus.removePrefix("视频进度："),
+                progress = state.loadProgress.coerceIn(0, 100) / 100f
+            )
+        } else if (hasLoadProgress) {
+            ProgressMetric(
+                label = "页面加载",
+                value = "${state.loadProgress.coerceIn(0, 100)}%",
+                progress = state.loadProgress.coerceIn(0, 100) / 100f
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProgressMetric(label: String, value: String, progress: Float) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = label,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        UnifiedProgressBar(progress = progress, modifier = Modifier.fillMaxWidth())
     }
 }
 
@@ -481,24 +606,21 @@ private fun UnifiedProgressBar(progress: Float, modifier: Modifier = Modifier) {
 
 @Composable
 private fun BrowserActionButtons(controller: AutoEwtUiController, state: AutoEwtUiState) {
-    ActionButton(R.drawable.ic_course, "打开课程", onClick = controller::openConfiguredCourseFromUi)
+    if (!state.automationRunning) {
+        ActionButton(R.drawable.ic_course, "打开课程", onClick = controller::openConfiguredCourseFromUi)
+    }
     ActionButton(
-        R.drawable.ic_play,
-        "开始刷课",
-        enabled = !state.automationRunning,
-        primary = true,
-        onClick = controller::startAutomationFromUi
+        icon = if (state.automationRunning) R.drawable.ic_stop else R.drawable.ic_play,
+        text = if (state.automationRunning) "停止" else "开始刷课",
+        primary = !state.automationRunning,
+        destructive = state.automationRunning,
+        onClick = if (state.automationRunning) controller::stopAutomationFromUi else controller::startAutomationFromUi
     )
-    ActionButton(
-        R.drawable.ic_stop,
-        "停止",
-        enabled = state.automationRunning,
-        destructive = true,
-        onClick = controller::stopAutomationFromUi
-    )
-    ActionButton(R.drawable.ic_login, "填登录", onClick = controller::requestFillLoginFromUi)
-    ActionButton(R.drawable.ic_probe, "探测", onClick = controller::requestProbeFromUi)
     ActionButton(R.drawable.ic_restart, "重启", onClick = controller::restartSessionFromUi)
+    if (!state.automationRunning) {
+        ActionButton(R.drawable.ic_login, "填登录", onClick = controller::requestFillLoginFromUi)
+        ActionButton(R.drawable.ic_probe, "探测", onClick = controller::requestProbeFromUi)
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -508,7 +630,8 @@ private fun BrowserViewAndLogChips(controller: AutoEwtUiController, state: AutoE
         selected = state.browserVisible,
         onClick = { controller.setBrowserVisibleFromUi(!state.browserVisible) },
         label = { Text(if (state.browserVisible) "浏览器显示" else "浏览器隐藏") },
-        leadingIcon = { ActionIcon(R.drawable.ic_open) }
+        leadingIcon = { ActionIcon(R.drawable.ic_open) },
+        colors = controlChipColors()
     )
     LogModeChip(
         label = "完整",
@@ -1047,7 +1170,9 @@ private fun ActionButton(
             contentColor = MaterialTheme.colorScheme.error
         )
         primary -> ButtonDefaults.buttonColors()
-        else -> ButtonDefaults.filledTonalButtonColors()
+        else -> ButtonDefaults.outlinedButtonColors(
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
     val content: @Composable () -> Unit = {
         ActionIcon(icon)
@@ -1074,7 +1199,7 @@ private fun ActionButton(
             content()
         }
     } else {
-        androidx.compose.material3.FilledTonalButton(
+        OutlinedButton(
             onClick = onClick,
             enabled = enabled,
             contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
@@ -1093,9 +1218,17 @@ private fun LogModeChip(label: String, icon: Int, selected: Boolean, onClick: ()
         selected = selected,
         onClick = onClick,
         label = { Text(label) },
-        leadingIcon = { ActionIcon(icon) }
+        leadingIcon = { ActionIcon(icon) },
+        colors = controlChipColors()
     )
 }
+
+@Composable
+private fun controlChipColors() = FilterChipDefaults.filterChipColors(
+    selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+    selectedLabelColor = MaterialTheme.colorScheme.onSurface,
+    selectedLeadingIconColor = MaterialTheme.colorScheme.primary
+)
 
 @Composable
 private fun ActionIcon(icon: Int) {
