@@ -4,6 +4,7 @@ import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,14 +19,18 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -43,6 +48,7 @@ import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -66,6 +72,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.launch
 import org.mozilla.geckoview.GeckoView
+
+data class AutoEwtListUrlCandidate(
+    val id: String,
+    val title: String,
+    val status: String,
+    val filter: String,
+    val startTime: String,
+    val deadline: String,
+    val teacher: String
+)
 
 class AutoEwtUiState {
     companion object {
@@ -97,6 +113,40 @@ class AutoEwtUiState {
     var autoFillLogin by mutableStateOf(true)
     var autoSubmitLogin by mutableStateOf(true)
     var desktopMode by mutableStateOf(true)
+    var totalCourseDay by mutableIntStateOf(0)
+    var totalCourseDays by mutableIntStateOf(0)
+    var listUrlDiscoveryRunning by mutableStateOf(false)
+    var listUrlDiscoveryMessage by mutableStateOf("")
+    var listUrlChoiceVisible by mutableStateOf(false)
+    var listUrlCandidates by mutableStateOf<List<AutoEwtListUrlCandidate>>(emptyList())
+
+    fun showListUrlCandidates(candidates: List<AutoEwtListUrlCandidate>) {
+        listUrlCandidates = candidates
+        listUrlChoiceVisible = candidates.isNotEmpty()
+    }
+
+    fun clearListUrlCandidates() {
+        listUrlChoiceVisible = false
+        listUrlCandidates = emptyList()
+    }
+
+    fun updateListUrlDiscovery(running: Boolean, message: String) {
+        listUrlDiscoveryRunning = running
+        listUrlDiscoveryMessage = message
+        if (!running) {
+            clearListUrlCandidates()
+        }
+    }
+
+    fun updateCourseDayProgress(day: Int, totalDays: Int) {
+        totalCourseDays = totalDays.coerceAtLeast(0)
+        totalCourseDay = day.coerceIn(0, totalCourseDays)
+    }
+
+    fun clearCourseDayProgress() {
+        totalCourseDay = 0
+        totalCourseDays = 0
+    }
 }
 
 interface AutoEwtUiController {
@@ -117,6 +167,8 @@ interface AutoEwtUiController {
     fun restartSessionFromUi()
     fun saveConfigFromUi()
     fun saveAndOpenFromUi()
+    fun selectListUrlCandidateFromUi(candidateId: String, title: String)
+    fun cancelListUrlDiscoveryFromUi()
 }
 
 object AutoEwtComposeUi {
@@ -154,23 +206,28 @@ private fun AutoEwtApp(controller: AutoEwtUiController) {
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            AppHeader(controller)
-            PrimaryTabRow(selectedTabIndex = state.page) {
-                Tab(
-                    selected = state.page == AutoEwtUiState.PAGE_BROWSER,
-                    onClick = controller::showBrowserPage,
-                    text = { Text("浏览器") }
-                )
-                Tab(
-                    selected = state.page == AutoEwtUiState.PAGE_CONFIG,
-                    onClick = controller::showConfigPage,
-                    text = { Text("配置") }
-                )
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                AppHeader(controller)
+                PrimaryTabRow(selectedTabIndex = state.page) {
+                    Tab(
+                        selected = state.page == AutoEwtUiState.PAGE_BROWSER,
+                        onClick = controller::showBrowserPage,
+                        text = { Text("浏览器") }
+                    )
+                    Tab(
+                        selected = state.page == AutoEwtUiState.PAGE_CONFIG,
+                        onClick = controller::showConfigPage,
+                        text = { Text("配置") }
+                    )
+                }
+                when (state.page) {
+                    AutoEwtUiState.PAGE_CONFIG -> ConfigScreen(controller)
+                    else -> BrowserScreen(controller)
+                }
             }
-            when (state.page) {
-                AutoEwtUiState.PAGE_CONFIG -> ConfigScreen(controller)
-                else -> BrowserScreen(controller)
+            if (state.listUrlChoiceVisible) {
+                ListUrlCandidateDialog(controller)
             }
         }
     }
@@ -334,6 +391,8 @@ private fun BrowserControlColumn(
             modifier = Modifier.fillMaxWidth()
         )
 
+        CourseDayProgressPanel(state)
+
         if (state.videoStatus.isNotBlank()) {
             Text(
                 text = state.videoStatus,
@@ -354,6 +413,48 @@ private fun BrowserControlColumn(
                     .weight(1f, fill = false)
             )
         }
+    }
+}
+
+@Composable
+private fun CourseDayProgressPanel(state: AutoEwtUiState) {
+    val totalDays = state.totalCourseDays
+    if (totalDays <= 0) {
+        return
+    }
+    val day = state.totalCourseDay.coerceIn(1, totalDays)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "总刷课进度",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "第 $day / $totalDays 天",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        LinearProgressIndicator(
+            progress = { day.toFloat() / totalDays.toFloat() },
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 
@@ -418,7 +519,17 @@ private fun BrowserWorkspace(controller: AutoEwtUiController, modifier: Modifier
             .padding(8.dp)
     ) {
         if (state.browserVisible) {
-            BrowserView(controller, Modifier.fillMaxSize())
+            Box(modifier = Modifier.fillMaxSize()) {
+                BrowserView(controller, Modifier.fillMaxSize())
+                if (state.listUrlDiscoveryRunning) {
+                    ListUrlDiscoveryBanner(
+                        message = state.listUrlDiscoveryMessage.ifBlank { "正在获取课程列表 URL" },
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(10.dp)
+                    )
+                }
+            }
         } else {
             Box(
                 modifier = Modifier.fillMaxSize(),
@@ -446,6 +557,39 @@ private fun BrowserView(controller: AutoEwtUiController, modifier: Modifier = Mo
             }
         }
     )
+}
+
+@Composable
+private fun ListUrlDiscoveryBanner(message: String, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        tonalElevation = 4.dp,
+        shadowElevation = 2.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ActionIcon(R.drawable.ic_probe)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "正在获取课程列表 URL",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -525,6 +669,124 @@ private fun LogPanel(state: AutoEwtUiState, modifier: Modifier = Modifier) {
             )
         }
     }
+}
+
+@Composable
+private fun ListUrlCandidateDialog(controller: AutoEwtUiController) {
+    val candidates = controller.state.listUrlCandidates
+    AlertDialog(
+        onDismissRequest = controller::cancelListUrlDiscoveryFromUi,
+        shape = RoundedCornerShape(8.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        textContentColor = MaterialTheme.colorScheme.onSurface,
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "选择课程列表 URL",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "找到 ${candidates.size} 个未完成任务",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        text = {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(candidates, key = { it.id }) { candidate ->
+                    ListUrlCandidateRow(
+                        candidate = candidate,
+                        onClick = {
+                            controller.selectListUrlCandidateFromUi(candidate.id, candidate.title)
+                        }
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = controller::cancelListUrlDiscoveryFromUi) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun ListUrlCandidateRow(candidate: AutoEwtListUrlCandidate, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = candidate.title.ifBlank { "未命名任务" },
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = candidate.status.ifBlank { "未完成" },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (candidate.filter.isNotBlank() && !candidate.status.contains(candidate.filter)) {
+                    Text(
+                        text = candidate.filter,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            if (candidate.deadline.isNotBlank()) {
+                CandidateMetaLine("截止", candidate.deadline)
+            }
+            if (candidate.startTime.isNotBlank()) {
+                CandidateMetaLine("开始", candidate.startTime)
+            }
+            if (candidate.teacher.isNotBlank()) {
+                CandidateMetaLine("布置人", candidate.teacher)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CandidateMetaLine(label: String, value: String) {
+    Text(
+        text = "$label：$value",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+    )
 }
 
 @Composable
@@ -615,28 +877,6 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
     val state = controller.state
     var advancedExpanded by remember { mutableStateOf(false) }
     Panel(modifier = modifier) {
-        SectionTitle("任务设置")
-        OutlinedTextField(
-            value = state.dayToStartOn,
-            onValueChange = { state.dayToStartOn = it.filter(Char::isDigit) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("从第几天开始") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-        )
-        CheckRow(
-            checked = state.chooseCorrectly,
-            onCheckedChange = { state.chooseCorrectly = it },
-            text = "做题时选择正确答案"
-        )
-        OutlinedTextField(
-            value = state.reportId,
-            onValueChange = { state.reportId = it },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("report_id") }
-        )
-        HorizontalDivider()
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -645,7 +885,7 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
             Column(modifier = Modifier.weight(1f)) {
                 SectionTitle("高级设置")
                 Text(
-                    text = "当前：${if (state.mode == "paper") "做题" else "刷课"}，${if (state.desktopMode) "桌面浏览器模式" else "移动浏览器模式"}",
+                    text = "当前：${if (state.mode == "paper") "做题" else "刷课"}，从第 ${state.dayToStartOn.ifBlank { "1" }} 天开始，${if (state.desktopMode) "桌面浏览器模式" else "移动浏览器模式"}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
@@ -658,6 +898,28 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
         }
         if (advancedExpanded) {
             WarningBox("高级设置会改变自动化入口、登录行为和浏览器 UA/viewport。改错可能导致无法登录、日期/课程识别异常或触发浏览器重启；除非排查兼容问题，建议保持默认。")
+            SectionTitle("任务设置")
+            OutlinedTextField(
+                value = state.dayToStartOn,
+                onValueChange = { state.dayToStartOn = it.filter(Char::isDigit) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("从第几天开始") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            CheckRow(
+                checked = state.chooseCorrectly,
+                onCheckedChange = { state.chooseCorrectly = it },
+                text = "做题时选择正确答案"
+            )
+            OutlinedTextField(
+                value = state.reportId,
+                onValueChange = { state.reportId = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("report_id") }
+            )
+            HorizontalDivider()
             SectionTitle("运行模式")
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),

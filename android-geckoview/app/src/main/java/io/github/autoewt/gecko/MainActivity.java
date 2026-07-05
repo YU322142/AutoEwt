@@ -1,7 +1,6 @@
 package io.github.autoewt.gecko;
 
 import android.app.AlarmManager;
-import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.content.SharedPreferences;
 import android.content.Intent;
@@ -90,7 +89,6 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private String pendingChildTaskKind = "";
     private String childTaskKind = "";
     private boolean listUrlDiscoveryRunning = false;
-    private AlertDialog listUrlChoiceDialog;
     private WebExtension.Port activePort;
     private WebExtension bridgeExtension;
     private final ArrayDeque<GeckoSession> parentSessions = new ArrayDeque<>();
@@ -583,6 +581,19 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     }
 
     @Override
+    public void selectListUrlCandidateFromUi(String candidateId, String title) {
+        if (uiState != null) {
+            uiState.clearListUrlCandidates();
+        }
+        sendListUrlCandidateSelection(candidateId, title);
+    }
+
+    @Override
+    public void cancelListUrlDiscoveryFromUi() {
+        cancelListUrlDiscovery("用户取消选择");
+    }
+
+    @Override
     public void startAutomationFromUi() {
         saveConfigFromForm(true);
         startAutomation();
@@ -838,10 +849,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 .putBoolean(KEY_AUTO_FILL_LOGIN, true)
                 .putBoolean(KEY_AUTO_SUBMIT_LOGIN, true)
                 .apply();
-        if (listUrlChoiceDialog != null && listUrlChoiceDialog.isShowing()) {
-            listUrlChoiceDialog.dismiss();
-        }
         listUrlDiscoveryRunning = true;
+        setListUrlDiscoveryUi(true, "正在打开任务页");
         pendingChildTaskKind = "";
         childTaskKind = "";
         updateAutomationButtons();
@@ -878,6 +887,12 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         postToConnectedPorts(message);
     }
 
+    private void setListUrlDiscoveryUi(boolean running, String message) {
+        if (uiState != null) {
+            uiState.updateListUrlDiscovery(running, message == null ? "" : message);
+        }
+    }
+
     private void sendListUrlCandidateSelection(String candidateId, String title) {
         JSONObject message = new JSONObject();
         try {
@@ -887,28 +902,26 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         } catch (JSONException ignored) {
         }
         postToConnectedPorts(message);
+        setListUrlDiscoveryUi(true, "正在打开所选任务：" + title);
         log("URL 获取：已选择任务：" + title);
     }
 
     private void cancelListUrlDiscovery(String reason) {
         listUrlDiscoveryRunning = false;
         sendStopListUrlDiscoveryCommand();
+        setListUrlDiscoveryUi(false, "");
         log("URL 获取已取消：" + reason);
     }
 
     private void showListUrlCandidateDialog(JSONArray candidates) {
         if (candidates == null || candidates.length() == 0) {
             listUrlDiscoveryRunning = false;
+            setListUrlDiscoveryUi(false, "");
             log("URL 获取失败：没有找到可选任务");
             return;
         }
-        if (listUrlChoiceDialog != null && listUrlChoiceDialog.isShowing()) {
-            listUrlChoiceDialog.dismiss();
-        }
 
-        ArrayList<String> candidateIds = new ArrayList<>();
-        ArrayList<String> candidateTitles = new ArrayList<>();
-        ArrayList<String> labels = new ArrayList<>();
+        ArrayList<AutoEwtListUrlCandidate> candidateItems = new ArrayList<>();
         for (int i = 0; i < candidates.length(); i++) {
             JSONObject candidate = candidates.optJSONObject(i);
             if (candidate == null) {
@@ -925,44 +938,28 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             String deadline = trimForDialog(candidate.optString("deadline", ""), 40);
             String teacher = trimForDialog(candidate.optString("teacher", ""), 32);
 
-            StringBuilder label = new StringBuilder();
-            label.append(title);
-            label.append("\n状态：").append(status);
-            if (!filter.isEmpty() && !status.contains(filter)) {
-                label.append("  分类：").append(filter);
-            }
-            if (!deadline.isEmpty()) {
-                label.append("\n截止：").append(deadline);
-            }
-            if (!startTime.isEmpty()) {
-                label.append("  开始：").append(startTime);
-            }
-            if (!teacher.isEmpty()) {
-                label.append("\n布置人：").append(teacher);
-            }
-            candidateIds.add(id);
-            candidateTitles.add(title);
-            labels.add(label.toString());
+            candidateItems.add(new AutoEwtListUrlCandidate(
+                    id,
+                    title,
+                    status,
+                    filter,
+                    startTime,
+                    deadline,
+                    teacher
+            ));
         }
 
-        if (labels.isEmpty()) {
+        if (candidateItems.isEmpty()) {
             listUrlDiscoveryRunning = false;
+            setListUrlDiscoveryUi(false, "");
             log("URL 获取失败：候选任务数据为空");
             return;
         }
 
-        String[] items = labels.toArray(new String[0]);
-        listUrlChoiceDialog = new AlertDialog.Builder(this)
-                .setTitle("选择课程列表 URL")
-                .setItems(items, (dialog, which) -> {
-                    if (which >= 0 && which < candidateIds.size()) {
-                        sendListUrlCandidateSelection(candidateIds.get(which), candidateTitles.get(which));
-                    }
-                })
-                .setNegativeButton("取消", (dialog, which) -> cancelListUrlDiscovery("用户取消选择"))
-                .create();
-        listUrlChoiceDialog.setOnCancelListener(dialog -> cancelListUrlDiscovery("用户关闭选择窗口"));
-        listUrlChoiceDialog.show();
+        if (uiState != null) {
+            uiState.showListUrlCandidates(candidateItems);
+        }
+        setListUrlDiscoveryUi(true, "请选择要保存的任务");
     }
 
     private String trimForDialog(String value, int maxChars) {
@@ -990,6 +987,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         pendingChildTaskKind = "";
         childTaskKind = "";
         listUrlDiscoveryRunning = false;
+        if (uiState != null) {
+            uiState.clearCourseDayProgress();
+        }
         updateAutomationButtons();
         log("自动刷课已启动");
         closeAllChildSessions("start");
@@ -1004,6 +1004,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         pendingChildTaskKind = "";
         childTaskKind = "";
         listUrlDiscoveryRunning = false;
+        if (uiState != null) {
+            uiState.clearCourseDayProgress();
+        }
         updateAutomationButtons();
         sendAutomationCommand("stop");
         closeAllChildSessions("stop");
@@ -1116,9 +1119,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             return;
         }
         listUrlDiscoveryRunning = false;
-        if (listUrlChoiceDialog != null && listUrlChoiceDialog.isShowing()) {
-            listUrlChoiceDialog.dismiss();
-        }
+        setListUrlDiscoveryUi(false, "");
         sendStopListUrlDiscoveryCommand();
         prefs.edit()
                 .putString(KEY_LIST_URL, url)
@@ -1495,6 +1496,12 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 if (statusText != null) {
                     statusText.setText(videoStatus);
                 }
+            } else if ("automationDayProgress".equals(type)) {
+                int day = json.optInt("day", 0);
+                int totalDays = json.optInt("totalDays", 0);
+                if (uiState != null && day > 0 && totalDays > 0) {
+                    uiState.updateCourseDayProgress(day, totalDays);
+                }
             } else if ("nativeTap".equals(type)) {
                 handleNativeTap(json);
             } else if ("closeChildSession".equals(type)) {
@@ -1502,17 +1509,18 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             } else if ("restartBrowser".equals(type)) {
                 restartBrowserFromAutomation(json.optString("reason", "unknown"), json.optString("url", ""));
             } else if ("listUrlDiscoveryLog".equals(type)) {
-                log("URL 获取：" + json.optString("message", ""));
+                String messageText = json.optString("message", "");
+                setListUrlDiscoveryUi(true, messageText);
+                log("URL 获取：" + messageText);
             } else if ("listUrlDiscoveryCandidates".equals(type)) {
+                setListUrlDiscoveryUi(true, "请选择要保存的任务");
                 log("URL 获取：请选择要保存的任务");
                 runOnUiThread(() -> showListUrlCandidateDialog(json.optJSONArray("candidates")));
             } else if ("listUrlDiscovered".equals(type)) {
                 saveDiscoveredListUrl(json.optString("url", ""), json.optString("title", ""));
             } else if ("listUrlDiscoveryFailed".equals(type)) {
                 listUrlDiscoveryRunning = false;
-                if (listUrlChoiceDialog != null && listUrlChoiceDialog.isShowing()) {
-                    listUrlChoiceDialog.dismiss();
-                }
+                setListUrlDiscoveryUi(false, "");
                 log("URL 获取失败：" + json.optString("reason", "未找到可用任务"));
             } else {
                 log("扩展消息：" + json);

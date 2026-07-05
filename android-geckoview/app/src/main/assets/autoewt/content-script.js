@@ -162,6 +162,21 @@
     }, payload || {}));
   }
 
+  function reportDayProgress(result) {
+    if (!result || Number(result.totalDays || 0) <= 0) {
+      return;
+    }
+    const totalDays = Number(result.totalDays || 0);
+    const day = Math.min(totalDays, Math.max(1, Number(result.dayIndex || 0) + 1));
+    postMessage({
+      type: "automationDayProgress",
+      day,
+      totalDays,
+      progress: day / totalDays,
+      timestamp: Date.now()
+    });
+  }
+
   function resetStuckWatchdog() {
     lastStuckSignature = "";
     stuckCount = 0;
@@ -1329,6 +1344,7 @@
     }
 
     const result = clickNextCourse();
+    reportDayProgress(result);
     if (result.clicked) {
       noteAutomationProgress();
       logAutomation("已点击未完成课程", { label: result.label });
