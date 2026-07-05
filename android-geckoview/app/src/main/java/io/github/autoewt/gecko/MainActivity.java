@@ -90,6 +90,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private final ArrayDeque<GeckoSession> parentSessions = new ArrayDeque<>();
     private final ArrayList<WebExtension.Port> connectedPorts = new ArrayList<>();
     private final StringBuilder logBuffer = new StringBuilder();
+    private long lastAutomationRestartAt = 0L;
     private static final int LOG_MODE_FULL = 0;
     private static final int LOG_MODE_SINGLE = 1;
     private static final int LOG_MODE_HIDDEN = 2;
@@ -898,6 +899,24 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         load(lastUrl);
     }
 
+    private void restartBrowserFromAutomation(String reason, String sourceUrl) {
+        long now = SystemClock.uptimeMillis();
+        if (now - lastAutomationRestartAt < 45000L) {
+            log("自动化请求重启过于频繁，已忽略：" + reason);
+            return;
+        }
+        lastAutomationRestartAt = now;
+        String listUrl = configuredListUrl();
+        boolean running = prefs.getBoolean(KEY_AUTOMATION_RUNNING, false);
+        if (running && !listUrl.isEmpty()) {
+            lastUrl = listUrl;
+        } else if (sourceUrl != null && !sourceUrl.trim().isEmpty() && shouldPersistUrl(sourceUrl)) {
+            lastUrl = sourceUrl;
+        }
+        log("检测到自动化卡死，重启浏览器：" + reason);
+        restartSession();
+    }
+
     private void loadConfigIntoForm() {
         String username = prefs.getString(KEY_USERNAME, "");
         String password = prefs.getString(KEY_PASSWORD, "");
@@ -1246,6 +1265,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 handleNativeTap(json);
             } else if ("closeChildSession".equals(type)) {
                 closeChildSession(json.optString("reason", "page"));
+            } else if ("restartBrowser".equals(type)) {
+                restartBrowserFromAutomation(json.optString("reason", "unknown"), json.optString("url", ""));
             } else {
                 log("扩展消息：" + json);
             }

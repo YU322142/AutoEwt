@@ -17,6 +17,7 @@
   const DEFAULT_AUTOMATION_DELAY = 1500;
   const DAY_SWITCH_DELAY = 2500;
   const COURSE_PROBE_RETRY_DELAY = 10000;
+  const STUCK_RESTART_AFTER = 3;
   const EXACT_STUDY_PROGRESS_RE = /^学\s*\d+(?:\.\d+)?\s*[%％]$/;
   const WATCH_PROGRESS_RE = /已看\s*\d+(?:\.\d+)?\s*[%％]/;
   const missedCheckpointReplayElements = new WeakSet();
@@ -37,6 +38,9 @@
   let lastPlaylistClickSignature = "";
   let lastCheckpointTapAt = 0;
   let lastCheckpointSignature = "";
+  let lastStuckSignature = "";
+  let stuckCount = 0;
+  let lastRestartRequestAt = 0;
   let videoEndReported = false;
   let lastReportedAutomation = "";
   let checkpointObserverInstalled = false;
@@ -126,6 +130,60 @@
       url: location.href,
       timestamp: Date.now()
     }, payload || {}));
+  }
+
+  function resetStuckWatchdog() {
+    lastStuckSignature = "";
+    stuckCount = 0;
+  }
+
+  function isVideoActivelyPlaying() {
+    return Array.from(document.querySelectorAll("video")).some((video) => {
+      return !video.paused && !video.ended && Number(video.currentTime || 0) > 0;
+    });
+  }
+
+  function noteAutomationProgress() {
+    resetStuckWatchdog();
+  }
+
+  function notePossibleStuck(reason, details) {
+    if (!automationRunning || isLoginPage() || isVideoActivelyPlaying()) {
+      resetStuckWatchdog();
+      return false;
+    }
+    const signature = [
+      reason,
+      location.pathname,
+      location.hash.split("&").slice(0, 3).join("&"),
+      details || ""
+    ].join("|");
+    if (signature === lastStuckSignature) {
+      stuckCount += 1;
+    } else {
+      lastStuckSignature = signature;
+      stuckCount = 1;
+    }
+    if (stuckCount >= STUCK_RESTART_AFTER) {
+      return requestBrowserRestart(reason);
+    }
+    return false;
+  }
+
+  function requestBrowserRestart(reason) {
+    const now = Date.now();
+    if (now - lastRestartRequestAt < 45000 || isVideoActivelyPlaying()) {
+      return false;
+    }
+    lastRestartRequestAt = now;
+    resetStuckWatchdog();
+    logAutomation("检测到页面卡死且视频未播放，正在重启浏览器", { reason });
+    return postMessage({
+      type: "restartBrowser",
+      reason,
+      url: location.href,
+      timestamp: now
+    });
   }
 
   function videoProgress(video) {
@@ -648,6 +706,7 @@
     automationRunning = true;
     if (!wasRunning) {
       resetDayScanState();
+      resetStuckWatchdog();
     }
     if (!wasRunning) {
       logAutomation("自动刷课已启动", { reason });
@@ -658,6 +717,7 @@
   function stopAutomation(reason) {
     automationRunning = false;
     resetDayScanState();
+    resetStuckWatchdog();
     if (automationTimer) {
       clearTimeout(automationTimer);
       automationTimer = 0;
@@ -711,6 +771,7 @@
     dayListSignature = "";
     lastDayClickAt = 0;
     clearCourseClickState();
+    resetStuckWatchdog();
   }
 
   function clearCourseClickState() {
@@ -773,27 +834,36 @@
     if (isPlayVideosPage()) {
       const playlistResult = clickVideoPlaylistItem();
       if (playlistResult.clicked) {
+        noteAutomationProgress();
         setNextAutomationDelay(DAY_SWITCH_DELAY);
         logAutomation("已点击视频小节", { label: playlistResult.label });
         return;
       }
       setNextAutomationDelay(COURSE_PROBE_RETRY_DELAY);
+      notePossibleStuck("playVideosNoPlayer", location.href);
       logAutomation("等待视频小节或播放器加载");
       return;
     }
 
     const result = clickNextCourse();
     if (result.clicked) {
+      noteAutomationProgress();
       logAutomation("已点击未完成课程", { label: result.label });
       return;
     }
     if (result.dayClicked) {
+      if (result.daySwitchStale) {
+        notePossibleStuck("daySwitchBlocked", `${result.dayIndex + 1}/${result.totalDays}`);
+      } else {
+        noteAutomationProgress();
+      }
       setNextAutomationDelay(DAY_SWITCH_DELAY);
       logAutomation("已切换到任务日期", { dayIndex: result.dayIndex + 1 });
       return;
     }
     if (result.totalDays > 0) {
       setNextAutomationDelay(COURSE_PROBE_RETRY_DELAY);
+      notePossibleStuck("courseListNoCandidate", `${result.dayIndex + 1}/${result.totalDays}/${result.buttonCount}`);
       logAutomation("暂未找到未完成视频课程", {
         totalDays: result.totalDays,
         dayIndex: result.dayIndex + 1,
@@ -801,6 +871,7 @@
       });
     } else {
       setNextAutomationDelay(COURSE_PROBE_RETRY_DELAY);
+      notePossibleStuck("courseListNoDays", location.href);
       logAutomation("等待课程列表加载");
     }
   }
@@ -834,8 +905,16 @@
       };
     }
     if (selectedDayIndex !== dayCursorIndex) {
+      const staleDaySwitch = lastDayClickAt > 0 && Date.now() - lastDayClickAt > 10000;
       clickCourseDay(days[dayCursorIndex]);
-      return { clicked: false, dayClicked: true, dayIndex: dayCursorIndex, totalDays: days.length, buttonCount: 0 };
+      return {
+        clicked: false,
+        dayClicked: true,
+        daySwitchStale: staleDaySwitch,
+        dayIndex: dayCursorIndex,
+        totalDays: days.length,
+        buttonCount: 0
+      };
     }
 
     const candidates = findCourseButtonCandidates(false);
@@ -884,7 +963,14 @@
     if (nextDayIndex >= 0) {
       dayCursorIndex = nextDayIndex;
       clickCourseDay(days[nextDayIndex]);
-      return { clicked: false, dayClicked: true, dayIndex: nextDayIndex, totalDays: days.length, buttonCount: 0 };
+      return {
+        clicked: false,
+        dayClicked: true,
+        daySwitchStale: false,
+        dayIndex: nextDayIndex,
+        totalDays: days.length,
+        buttonCount: 0
+      };
     }
 
     return {
@@ -915,7 +1001,10 @@
     }
     lastDayClickAt = now;
     clearCourseClickState();
-    return clickElement(day);
+    const label = extractDayDateLabel(day) || compactText(day).slice(0, 40);
+    const clickInfo = clickElementInfo(day);
+    requestNativeTap(clickInfo, label, "day");
+    return clickInfo.clicked;
   }
 
   function findCourseDays() {
@@ -1394,7 +1483,10 @@
       }
       logAutomation("正在尝试播放视频");
     } else if (checkpointClicked) {
+      noteAutomationProgress();
       logAutomation("已处理视频检查点，等待继续播放");
+    } else if (!video.paused && !video.ended) {
+      noteAutomationProgress();
     }
 
     postMessage({
@@ -1421,6 +1513,7 @@
 
     if ((video.ended || nearEnd) && !videoEndReported) {
       videoEndReported = true;
+      noteAutomationProgress();
       logAutomation("视频已结束，返回课程列表");
       setTimeout(() => {
         postMessage({
@@ -1431,6 +1524,9 @@
         });
         history.back();
       }, 800);
+    } else if (video.paused && !video.ended && !checkpointClicked && !nearEnd) {
+      const progressKey = `${Math.round(Number(video.currentTime || 0))}/${Math.round(Number(video.duration || 0))}`;
+      notePossibleStuck("videoPaused", progressKey);
     }
   }
 
