@@ -143,6 +143,7 @@ class AutoEwtUiState {
     var username by mutableStateOf("")
     var password by mutableStateOf("")
     var listUrl by mutableStateOf("")
+    var listUrlTitle by mutableStateOf("")
     var mode by mutableStateOf("video")
     var dayToStartOn by mutableStateOf("1")
     var chooseCorrectly by mutableStateOf(true)
@@ -153,8 +154,10 @@ class AutoEwtUiState {
     var backgroundKeepAlive by mutableStateOf(true)
     var notificationPermissionGranted by mutableStateOf(true)
     var oobeVisible by mutableStateOf(false)
+    var oobeStep by mutableIntStateOf(0)
     var totalCourseDone by mutableIntStateOf(0)
     var totalCourses by mutableIntStateOf(0)
+    var totalCourseProgressScope by mutableStateOf("")
     var totalCourseDay by mutableIntStateOf(0)
     var totalCourseDays by mutableIntStateOf(0)
     var listUrlDiscoveryRunning by mutableStateOf(false)
@@ -186,14 +189,16 @@ class AutoEwtUiState {
         totalCourseDay = day.coerceIn(0, totalCourseDays)
     }
 
-    fun updateTotalCourseProgress(done: Int, total: Int) {
+    fun updateTotalCourseProgress(done: Int, total: Int, scope: String) {
         totalCourses = total.coerceAtLeast(0)
         totalCourseDone = done.coerceIn(0, totalCourses)
+        totalCourseProgressScope = scope
     }
 
     fun clearTotalCourseProgress() {
         totalCourseDone = 0
         totalCourses = 0
+        totalCourseProgressScope = ""
     }
 
     fun clearCourseDayProgress() {
@@ -607,9 +612,10 @@ private fun RunStatusPanel(state: AutoEwtUiState) {
         if (hasTotalCourseProgress) {
             val done = state.totalCourseDone.coerceIn(0, totalCourses)
             val percent = done.toFloat() / totalCourses.toFloat() * 100f
+            val allDays = state.totalCourseProgressScope == "days"
             ProgressMetric(
-                label = "总刷课进度",
-                value = "$done / $totalCourses  ${String.format(Locale.ROOT, "%.1f", percent)}%",
+                label = if (allDays) "总刷课进度（课程项）" else "当前页进度（课程项）",
+                value = "$done / $totalCourses 项 · ${String.format(Locale.ROOT, "%.1f", percent)}%",
                 progress = done.toFloat() / totalCourses.toFloat()
             )
         }
@@ -1074,9 +1080,19 @@ private fun ListUrlCandidateDialog(controller: AutoEwtUiController) {
 private fun OobeScreen(controller: AutoEwtUiController, onHelpClick: () -> Unit) {
     val state = controller.state
     val titles = listOf("欢迎", "后台运行", "账号与课程", "准备启动")
-    var step by remember { mutableIntStateOf(0) }
-    var stepHelpVisible by remember { mutableStateOf(false) }
     val lastStep = titles.lastIndex
+    var step by remember { mutableIntStateOf(state.oobeStep.coerceIn(0, lastStep)) }
+    var stepHelpVisible by remember { mutableStateOf(false) }
+
+    LaunchedEffect(state.oobeStep) {
+        step = state.oobeStep.coerceIn(0, lastStep)
+    }
+
+    fun setStep(nextStep: Int) {
+        val clamped = nextStep.coerceIn(0, lastStep)
+        state.oobeStep = clamped
+        step = clamped
+    }
 
     Column(
         modifier = Modifier
@@ -1143,7 +1159,7 @@ private fun OobeScreen(controller: AutoEwtUiController, onHelpClick: () -> Unit)
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             OutlinedButton(
-                onClick = { step = (step - 1).coerceAtLeast(0) },
+                onClick = { setStep(step - 1) },
                 enabled = step > 0,
                 modifier = Modifier.weight(1f)
             ) {
@@ -1155,7 +1171,7 @@ private fun OobeScreen(controller: AutoEwtUiController, onHelpClick: () -> Unit)
                         if (step == 2) {
                             controller.saveConfigFromUi()
                         }
-                        step += 1
+                        setStep(step + 1)
                     },
                     modifier = Modifier.weight(1f)
                 ) {
@@ -1236,9 +1252,10 @@ private fun OobeStepHelpDialog(
 @Composable
 private fun OobeWelcomeStep() {
     HelpSectionTitle("这是什么")
-    HelpParagraph("Android 版内置 GeckoView 浏览器内核，不需要用户安装浏览器驱动。UI 只负责配置、查看浏览器和进度；自动化逻辑在浏览器脚本中运行。")
+    HelpParagraph("AutoEwt 是一个用于升学 e 网通学习任务的自动化辅助客户端。它把账号配置、任务选择、课程网页、运行日志和进度显示放在同一个应用里，减少复制链接、切换浏览器和重复点击页面的步骤。")
+    HelpParagraph("Android 版内置 GeckoView 浏览器内核，不需要额外安装浏览器或驱动；自动化会在应用内打开网页并按未完成任务推进，你可以随时查看浏览器画面、总刷课进度、当前视频进度和日志。")
     HelpSectionTitle("使用边界")
-    HelpParagraph("本项目用于浏览器自动化与跨平台客户端技术研究。请遵守学校纪律、平台规则和法律法规。")
+    HelpParagraph("它不会绕过登录、验证码、账号权限或平台限制，也不会替你判断课程要求。请只在自己的账号和被允许的任务中使用，并遵守学校纪律、平台规则和法律法规。")
     HelpSectionTitle("接下来会做什么")
     OobeStep("1", "确认后台运行方式，避免息屏或退到后台后任务过早停止。")
     OobeStep("2", "填写账号和密码，然后自动获取并选择要刷的任务。")
@@ -1303,7 +1320,7 @@ private fun CourseListUrlSelection(controller: AutoEwtUiController) {
     val state = controller.state
     val controlsEnabled = !state.automationRunning && !state.listUrlDiscoveryRunning
     if (state.listUrl.isNotBlank() && !state.listUrlManualEntryVisible) {
-        SelectedListUrlStatus(state.listUrl)
+        SelectedListUrlStatus(state.listUrl, state.listUrlTitle)
     }
     Button(
         onClick = controller::discoverListUrlFromUi,
@@ -1326,6 +1343,9 @@ private fun CourseListUrlSelection(controller: AutoEwtUiController) {
             Text("取消获取")
         }
     } else {
+        if (state.listUrlDiscoveryMessage.isNotBlank()) {
+            WarningBox(state.listUrlDiscoveryMessage)
+        }
         HelpParagraph("刷完一个任务后，可以回到这里重新自动获取并选择下一个任务。已完成任务会自动隐藏，已截止但未完成的任务仍可选择。")
     }
     AnimatedVisibility(visible = state.listUrlManualEntryVisible) {
@@ -1336,7 +1356,7 @@ private fun CourseListUrlSelection(controller: AutoEwtUiController) {
 }
 
 @Composable
-private fun SelectedListUrlStatus(listUrl: String) {
+private fun SelectedListUrlStatus(listUrl: String, title: String) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
@@ -1351,12 +1371,19 @@ private fun SelectedListUrlStatus(listUrl: String) {
             ActionIcon(R.drawable.ic_course, size = 17.dp)
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = "已选择任务链接",
+                    text = "已选择任务",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = listUrl,
+                    text = title.ifBlank { "自动获取的课程任务" },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = compactListUrlLabel(listUrl),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -1366,12 +1393,31 @@ private fun SelectedListUrlStatus(listUrl: String) {
     }
 }
 
+private fun compactListUrlLabel(listUrl: String): String {
+    if (listUrl.isBlank()) {
+        return "未选择任务链接"
+    }
+    val uri = runCatching { java.net.URI(listUrl) }.getOrNull()
+    val host = uri?.host.orEmpty().ifBlank { return listUrl }
+    val fragment = uri?.fragment.orEmpty()
+    val section = when {
+        fragment.contains("student-task-overview") -> "任务详情"
+        fragment.contains("student/homework") -> "任务列表"
+        else -> "课程链接"
+    }
+    val homeworkId = Regex("""homeworkId=([^&#]+)""").find(listUrl)?.groupValues?.getOrNull(1)
+    return listOfNotNull(host, section, homeworkId?.let { "homeworkId=$it" }).joinToString(" · ")
+}
+
 @Composable
 private fun ManualListUrlFallbackField(state: AutoEwtUiState, enabled: Boolean) {
     WarningBox("自动获取失败时才需要手动填写。这里对应 README / config.yml 里的 list_url。")
     OutlinedTextField(
         value = state.listUrl,
-        onValueChange = { state.listUrl = it },
+        onValueChange = {
+            state.listUrl = it
+            state.listUrlTitle = ""
+        },
         enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
@@ -1387,9 +1433,9 @@ private fun ManualListUrlFallbackField(state: AutoEwtUiState, enabled: Boolean) 
 private fun OobeReadyStep(controller: AutoEwtUiController) {
     val state = controller.state
     HelpSectionTitle("确认配置")
-    OobeSummaryLine("运行模式", if (state.mode == "paper") "做题" else "刷课")
+    OobeSummaryLine("运行模式", "刷课")
     OobeSummaryLine("账号", state.username.ifBlank { "未填写" })
-    OobeSummaryLine("课程列表 URL", state.listUrl.ifBlank { "未填写，可稍后自动获取" })
+    OobeSummaryLine("课程任务", state.listUrlTitle.ifBlank { if (state.listUrl.isBlank()) "未选择，可稍后自动获取" else compactListUrlLabel(state.listUrl) })
     OobeSummaryLine("后台保活", if (state.backgroundKeepAlive) "开启" else "关闭")
     OobeSummaryLine("浏览器模式", if (state.desktopMode) "桌面模式" else "移动模式")
     WarningBox("启动后可以隐藏浏览器或日志；隐藏浏览器不会暂停自动化。")
@@ -1499,7 +1545,7 @@ private fun IconHelpDialog(onDismiss: () -> Unit) {
     val mainActions = listOf(
         HelpIconSpec(R.drawable.ic_link, "地址", "展开课程列表 URL 输入框；日常运行时默认隐藏，减少浏览器页占用。"),
         HelpIconSpec(R.drawable.ic_course, "打开课程", "按配置里的课程列表 URL 进入任务页。已完成任务会自动隐藏，已截止但未完成的任务仍可进入。"),
-        HelpIconSpec(R.drawable.ic_play, "开始刷课", "按配置页的模式运行：刷课会处理视频、FM 与检查点；做题会按 report_id/任务入口执行。"),
+        HelpIconSpec(R.drawable.ic_play, "开始刷课", "处理视频、FM、检查点和错过检测点后的重刷入口。试卷/测一测任务不会自动执行。"),
         HelpIconSpec(R.drawable.ic_stop, "停止", "停止当前自动化任务；正常停止不会触发崩溃重启。"),
         HelpIconSpec(R.drawable.ic_restart, "重启", "重建 GeckoView 浏览器会话。视频卡死、页面不再播放或兼容异常时可以使用。"),
         HelpIconSpec(R.drawable.ic_login, "填登录", "把配置页账号密码填入页面。验证码、短信验证仍需要手动完成。"),
@@ -1532,7 +1578,7 @@ private fun IconHelpDialog(onDismiss: () -> Unit) {
                 item {
                     HelpSectionTitle("基本流程")
                     HelpParagraph("先到配置页填写账号和密码，再使用“自动获取并选择任务”登录后选择具体任务。自动获取失败时才会显示手动 list_url 输入框。")
-                    HelpParagraph("高级设置里可切换刷课/做题、起始天数、自动登录、桌面浏览器模式等。默认桌面浏览器模式更接近电脑端页面。")
+                    HelpParagraph("高级设置里可调整起始天数、自动登录、桌面浏览器模式等。默认桌面浏览器模式更接近电脑端页面。")
                 }
                 item {
                     HelpSectionTitle("浏览器页图标")
@@ -1773,7 +1819,7 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
             Column(modifier = Modifier.weight(1f)) {
                 SectionTitle("高级设置")
                 Text(
-                    text = "当前：${if (state.mode == "paper") "做题" else "刷课"}，从第 ${state.dayToStartOn.ifBlank { "1" }} 天开始，${if (state.desktopMode) "桌面浏览器模式" else "移动浏览器模式"}",
+                    text = "当前：刷课，从第 ${state.dayToStartOn.ifBlank { "1" }} 天开始，${if (state.desktopMode) "桌面浏览器模式" else "移动浏览器模式"}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
@@ -1796,42 +1842,6 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
                 label = { Text("从第几天开始") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )
-            CheckRow(
-                checked = state.chooseCorrectly,
-                onCheckedChange = { state.chooseCorrectly = it },
-                text = "做题时选择正确答案",
-                enabled = inputsEnabled
-            )
-            OutlinedTextField(
-                value = state.reportId,
-                onValueChange = { state.reportId = it },
-                enabled = inputsEnabled,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("report_id") }
-            )
-            HorizontalDivider()
-            SectionTitle("运行模式")
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                FilterChip(
-                    selected = state.mode == "video",
-                    onClick = { state.mode = "video" },
-                    enabled = inputsEnabled,
-                    label = { Text("刷课") },
-                    leadingIcon = { ActionIcon(R.drawable.ic_play) }
-                )
-                FilterChip(
-                    selected = state.mode == "paper",
-                    onClick = { state.mode = "paper" },
-                    enabled = inputsEnabled,
-                    label = { Text("做题") },
-                    leadingIcon = { ActionIcon(R.drawable.ic_course) }
-                )
-            }
             SectionTitle("登录与浏览器兼容")
             CheckRow(
                 checked = state.autoFillLogin,

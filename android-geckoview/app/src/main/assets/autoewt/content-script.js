@@ -23,6 +23,8 @@
   const EXACT_STUDY_PROGRESS_RE = /^学\s*\d+(?:\.\d+)?\s*[%％]$/;
   const COMPLETED_STUDY_PROGRESS_RE = /学\s*100(?:\.0+)?\s*[%％]/;
   const WATCH_PROGRESS_RE = /已看\s*\d+(?:\.\d+)?\s*[%％]/;
+  const QUIZ_TASK_RE = /试卷|测一测|测验|考试|答题|继续答|去答题|去考试|去练习|试题|题目|\/\s*\d+\s*题|[0-9０-９]+\s*题/;
+  const LOGIN_ERROR_RE = /账号或密码错误|用户名或密码错误|密码错误|账号不存在|用户不存在|登录失败|请输入正确|验证码错误|验证码不正确|短信验证码错误|账号异常|账户异常/;
   const DISCOVERY_FILTERS = ["进行中", "未开始", "已截止"];
   const DISCOVERY_TASK_ACTION_RE = /查看详情|去完成|继续完成|去学习|开始学习|继续学习/;
   const missedCheckpointReplayElements = new WeakSet();
@@ -195,11 +197,17 @@
       done: progress.done,
       total: progress.total,
       progress: progress.done / progress.total,
+      scope: progress.scope || "visible",
+      unit: "项",
       timestamp: Date.now()
     });
   }
 
   function totalCourseProgress() {
+    const dayProgress = totalCourseProgressFromDays();
+    if (dayProgress) {
+      return dayProgress;
+    }
     const bodyText = compactText(document.body || document.documentElement);
     if (!bodyText) {
       return null;
@@ -215,7 +223,33 @@
       }
       match = pattern.exec(bodyText);
     }
-    return matches.sort((left, right) => right.total - left.total || right.done - left.done)[0] || null;
+    const visibleProgress = matches.sort((left, right) => right.total - left.total || right.done - left.done)[0] || null;
+    return visibleProgress ? Object.assign({ scope: "visible" }, visibleProgress) : null;
+  }
+
+  function totalCourseProgressFromDays() {
+    const days = findCourseDays();
+    if (!days.length) {
+      return null;
+    }
+    const seen = new Set();
+    let done = 0;
+    let total = 0;
+    for (const day of days) {
+      const text = compactText(day);
+      const progress = firstCompletionProgress(text);
+      const label = extractDayDateLabel(day) || text.slice(0, 60);
+      if (!progress || !label || seen.has(label)) {
+        continue;
+      }
+      seen.add(label);
+      done += progress.done;
+      total += progress.total;
+    }
+    if (total <= 0 || seen.size <= 1) {
+      return null;
+    }
+    return { done, total, scope: "days" };
   }
 
   function resetStuckWatchdog() {
@@ -417,6 +451,15 @@
 
     if (isLoginPage()) {
       const result = fillLogin("urlDiscovery", true);
+      if (result.loginError) {
+        stopListUrlDiscovery();
+        postMessage({
+          type: "listUrlDiscoveryFailed",
+          reason: `登录失败：${result.loginError}。请检查账号密码后重新自动获取任务。`,
+          timestamp: Date.now()
+        });
+        return;
+      }
       postListUrlDiscoveryLog(result.submitted ? "已提交登录，等待进入学生端" : "正在登录以获取任务列表");
       scheduleListUrlDiscovery(URL_DISCOVERY_RETRY_DELAY);
       return;
@@ -502,10 +545,13 @@
 
   function reportDiscoveryCandidateChoices() {
     if (!urlDiscoveryCandidates.length) {
+      const bodyText = compactText(document.body || document.documentElement);
       stopListUrlDiscovery();
       postMessage({
         type: "listUrlDiscoveryFailed",
-        reason: "没有找到可点击的未完成任务；已完成任务已自动隐藏",
+        reason: isQuizTaskText(bodyText)
+          ? "只找到试卷/测验类任务，刷课模式已自动过滤；请选择视频课程任务"
+          : "没有找到可点击的未完成任务；已完成任务已自动隐藏",
         timestamp: Date.now()
       });
       return;
@@ -655,6 +701,9 @@
     if (!title) {
       return null;
     }
+    if (isQuizTaskText(text) || isQuizTaskText(title)) {
+      return null;
+    }
     const teacher = discoveryField(text, /布置人[:：]\s*([^开始截止查看去继续]+)/);
     const startTime = discoveryField(text, /开始时间[:：]\s*([^截止查看去继续]+)/);
     const deadline = discoveryField(text, /截止时间[:：]\s*([^查看去继续]+)/);
@@ -795,6 +844,9 @@
           return false;
         }
         if (!DISCOVERY_TASK_ACTION_RE.test(text) || !/布置人|开始时间|截止时间|任务|假期|学习计划/.test(text)) {
+          return false;
+        }
+        if (!completed && isQuizTaskText(text)) {
           return false;
         }
         const isCompleted = /已完成/.test(text);
@@ -1143,6 +1195,15 @@
     return (element && (element.innerText || element.textContent || element.value || element.getAttribute("aria-label")) || "").trim();
   }
 
+  function loginErrorMessage() {
+    const candidates = Array.from(document.querySelectorAll("body *"))
+      .filter(visible)
+      .map((element) => compactText(element))
+      .filter((text) => text.length > 0 && text.length <= 160 && LOGIN_ERROR_RE.test(text));
+    const message = candidates[0] || "";
+    return message.replace(/\s+/g, " ").trim();
+  }
+
   function findLoginButton() {
     const byClass = document.querySelector(".ant-btn-block, button[type='submit'], input[type='submit']");
     if (byClass && visible(byClass)) {
@@ -1204,6 +1265,19 @@
   function fillLogin(reason, submit) {
     const username = String(config.username || "").trim();
     const password = String(config.password || "");
+    const initialLoginError = loginErrorMessage();
+    if (initialLoginError) {
+      const payload = {
+        reason,
+        usernameFilled: false,
+        passwordFilled: false,
+        captchaDetected: false,
+        submitted: false,
+        loginError: initialLoginError
+      };
+      reportLoginFill(payload);
+      return payload;
+    }
     if (!username && !password) {
       return {
         usernameFilled: false,
@@ -1267,6 +1341,7 @@
       submitted,
       agreementClicked,
       captchaDetected,
+      loginError: loginErrorMessage(),
       usernameSelectorFound: Boolean(usernameInput),
       passwordSelectorFound: Boolean(passwordInput)
     };
@@ -1411,6 +1486,10 @@
 
     if (isLoginPage()) {
       const result = fillLogin("automation", true);
+      if (result.loginError) {
+        finishAutomation(`登录失败：${result.loginError}。请检查账号密码后重新开始刷课。`);
+        return;
+      }
       if (result.captchaDetected) {
         logAutomation("检测到验证码或短信验证，请手动完成后继续");
       } else if (result.usernameFilled && result.passwordFilled) {
@@ -1445,6 +1524,11 @@
       return;
     }
 
+    if (isQuizTaskOverviewPage()) {
+      finishAutomation("当前任务是试卷/测验，刷课模式已跳过；请重新自动获取并选择视频课程任务");
+      return;
+    }
+
     reportTotalCourseProgress();
     const result = clickNextCourse();
     reportDayProgress(result);
@@ -1472,6 +1556,10 @@
         totalGroups: result.totalGroups,
         incompleteGroups: result.incompleteGroups
       });
+      return;
+    }
+    if (isQuizOnlyCourseList()) {
+      finishAutomation("当前任务只有试卷/测验，刷课模式已跳过；请重新自动获取并选择视频课程任务");
       return;
     }
     if (result.totalDays > 0) {
@@ -1668,6 +1756,36 @@
     return hasCourseListContent && !hasOpenCourseText;
   }
 
+  function isQuizTaskText(text) {
+    return QUIZ_TASK_RE.test(String(text || "").replace(/\s+/g, " "));
+  }
+
+  function isQuizTaskOverviewPage() {
+    if (!isTaskOverviewPage()) {
+      return false;
+    }
+    if (findCourseButtonCandidates(true).length > 0 || document.querySelector("video")) {
+      return false;
+    }
+    const title = taskOverviewTitle();
+    const bodyText = compactText(document.body || document.documentElement);
+    return isQuizTaskText(title) || (
+      isQuizTaskText(bodyText)
+      && /试卷|测一测|测验|考试/.test(bodyText)
+      && !/视频课任务|去学习|开始学习|继续学习|播放|去收听/.test(bodyText)
+    );
+  }
+
+  function isQuizOnlyCourseList() {
+    if (isLoginPage() || document.querySelector("video") || findCourseButtonCandidates(true).length > 0) {
+      return false;
+    }
+    const bodyText = compactText(document.body || document.documentElement);
+    return isQuizTaskText(bodyText)
+      && /试卷|测一测|测验|考试/.test(bodyText)
+      && /完成\s*\d+\s*\/\s*\d+|任务|题/.test(bodyText);
+  }
+
   function hasIncompleteCompletionProgressText(text) {
     return completionProgresses(text).some((progress) => progress.done < progress.total);
   }
@@ -1766,6 +1884,9 @@
         if (text.length < 4 || text.length > 180 || isCourseDayText(text)) {
           return false;
         }
+        if (isQuizCourseElement(element)) {
+          return false;
+        }
         const progress = firstCompletionProgress(text);
         if (!progress || progress.done >= progress.total) {
           return false;
@@ -1779,7 +1900,7 @@
           return false;
         }
         const text = compactText(element);
-        return !isCourseDayText(text) && isIncompleteCourseGroup(element);
+        return !isCourseDayText(text) && !isQuizCourseElement(element) && isIncompleteCourseGroup(element);
       });
 
     return uniqueElements(candidates)
@@ -2105,6 +2226,9 @@
           return false;
         }
         if (!includeFailed && candidate.kind === "oneClick" && finishedOneClickSignatures.has(candidate.signature)) {
+          return false;
+        }
+        if (isQuizCourseElement(candidate.element)) {
           return false;
         }
         return !isClosedCourseElement(candidate.element);
@@ -2452,6 +2576,19 @@
     }
     const container = courseContainer(element);
     return MISSED_CHECKPOINT_RE.test(compactText(container));
+  }
+
+  function isQuizCourseElement(element) {
+    if (!element || isMissedCheckpointReplayContext(element)) {
+      return false;
+    }
+    const ownText = compactText(element);
+    const containerText = compactText(courseContainer(element));
+    const text = [ownText, containerText].join(" ");
+    if (!isQuizTaskText(text)) {
+      return false;
+    }
+    return /试卷|测一测|测验|考试|继续答|去答题|去考试|去练习|\/\s*\d+\s*题|[0-9０-９]+\s*题/.test(text);
   }
 
   function summarizeCourseCandidates() {

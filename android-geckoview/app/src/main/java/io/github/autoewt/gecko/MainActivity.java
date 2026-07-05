@@ -55,6 +55,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private static final String KEY_USERNAME = "username";
     private static final String KEY_PASSWORD = "password";
     private static final String KEY_LIST_URL = "list_url";
+    private static final String KEY_LIST_URL_TITLE = "list_url_title";
     private static final String KEY_MODE = "mode";
     private static final String KEY_CHOOSE_CORRECTLY = "choose_correctly";
     private static final String KEY_REPORT_ID = "report_id";
@@ -68,7 +69,6 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private static final String KEY_NOTIFICATION_PERMISSION_REQUESTED = "notification_permission_requested";
 
     private static final String MODE_VIDEO = "video";
-    private static final String MODE_PAPER = "paper";
     private static final String DEFAULT_URL = "https://teacher.ewt360.com/";
     private static final String HOMEWORK_DISCOVERY_URL = "https://teacher.ewt360.com/ewtbend/bend/index/index.html#/student/homework";
     private static final String EXTENSION_URI = "resource://android/assets/autoewt/";
@@ -97,6 +97,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private String lastUrl = DEFAULT_URL;
     private String pendingChildTaskKind = "";
     private String childTaskKind = "";
+    private String pendingListUrlTitle = "";
     private boolean listUrlDiscoveryRunning = false;
     private WebExtension.Port activePort;
     private WebExtension bridgeExtension;
@@ -420,8 +421,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         listUrlInput = addEditRow(form, "课程列表 URL", "README 中的 list_url，保存后可直接打开", false, InputType.TYPE_TEXT_VARIATION_URI);
 
         dayInput = addEditRow(form, "从第几天开始", "默认 1", false, InputType.TYPE_CLASS_NUMBER);
-        chooseCorrectlyCheck = addCheckRow(form, "做题时选择正确答案");
-        reportIdInput = addEditRow(form, "report_id", "做题模式需要，可先留空", false, InputType.TYPE_CLASS_TEXT);
+        chooseCorrectlyCheck = new CheckBox(this);
+        reportIdInput = new EditText(this);
 
         addSectionTitle(form, "高级设置");
         addWarningText(form, "高级设置会改变自动化入口、登录行为和浏览器 UA/viewport。改错可能导致无法登录、日期/课程识别异常或触发浏览器重启；除非排查兼容问题，建议保持默认。");
@@ -432,7 +433,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         videoModeButton = new RadioButton(this);
         videoModeButton.setText("刷课");
         paperModeButton = new RadioButton(this);
-        paperModeButton.setText("做题");
+        paperModeButton.setVisibility(View.GONE);
         modeGroup.addView(videoModeButton);
         modeGroup.addView(paperModeButton);
         form.addView(modeGroup);
@@ -621,6 +622,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     @Override
     public void discoverListUrlFromUi() {
         saveConfigFromForm(true);
+        if (!validateCredentialsForDiscovery()) {
+            return;
+        }
         leaveOobeForBrowserIfNeeded();
         showBrowserPage();
         setBrowserVisibleFromUi(true);
@@ -708,6 +712,25 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             prefs.edit().putBoolean(KEY_OOBE_DONE, true).apply();
             uiState.setOobeVisible(false);
         }
+    }
+
+    private boolean validateCredentialsForDiscovery() {
+        String username = prefs.getString(KEY_USERNAME, "");
+        String password = prefs.getString(KEY_PASSWORD, "");
+        if (!username.trim().isEmpty() && !password.isEmpty()) {
+            return true;
+        }
+        listUrlDiscoveryRunning = false;
+        pendingListUrlTitle = "";
+        setListUrlManualEntryVisible(false);
+        setListUrlDiscoveryUi(false, "请先填写账号和密码，再自动获取任务。");
+        if (uiState != null) {
+            uiState.setOobeStep(2);
+            uiState.setPage(AutoEwtUiState.PAGE_CONFIG);
+        }
+        showConfigPage();
+        log("请先填写账号和密码，再自动获取课程列表 URL");
+        return false;
     }
 
     private void createRuntime() {
@@ -923,6 +946,12 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         String username = prefs.getString(KEY_USERNAME, "");
         String password = prefs.getString(KEY_PASSWORD, "");
         if (username.trim().isEmpty() || password.isEmpty()) {
+            pendingListUrlTitle = "";
+            setListUrlManualEntryVisible(false);
+            setListUrlDiscoveryUi(false, "请先填写账号和密码，再自动获取任务。");
+            if (uiState != null) {
+                uiState.setOobeStep(2);
+            }
             log("请先填写账号和密码，再自动获取课程列表 URL");
             showConfigPage();
             return;
@@ -988,6 +1017,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     }
 
     private void sendListUrlCandidateSelection(String candidateId, String title) {
+        pendingListUrlTitle = title == null ? "" : title.trim();
         JSONObject message = new JSONObject();
         try {
             message.put("type", "selectListUrlCandidate");
@@ -1204,9 +1234,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     }
 
     private String backgroundNotificationStatus() {
-        String mode = prefs.getString(KEY_MODE, MODE_VIDEO);
-        String modeText = MODE_PAPER.equals(mode) ? "做题" : "刷课";
-        return modeText + "运行中，点击返回浏览器界面";
+        return "刷课运行中，点击返回浏览器界面";
     }
 
     private void acquireAutomationWakeLock() {
@@ -1345,8 +1373,10 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
 
     private void saveDiscoveredListUrl(String rawUrl, String title) {
         String url = normalizeOptionalUrl(rawUrl);
+        String taskTitle = title == null || title.trim().isEmpty() ? pendingListUrlTitle : title.trim();
         if (!isDiscoveredListUrl(url)) {
             listUrlDiscoveryRunning = false;
+            pendingListUrlTitle = "";
             setListUrlDiscoveryUi(false, "");
             setListUrlManualEntryVisible(true);
             sendStopListUrlDiscoveryCommand();
@@ -1356,21 +1386,24 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         listUrlDiscoveryRunning = false;
         setListUrlDiscoveryUi(false, "");
         setListUrlManualEntryVisible(false);
+        pendingListUrlTitle = "";
         sendStopListUrlDiscoveryCommand();
         prefs.edit()
                 .putString(KEY_LIST_URL, url)
+                .putString(KEY_LIST_URL_TITLE, taskTitle)
                 .putString(KEY_LAST_URL, url)
                 .apply();
         lastUrl = url;
         setUrlText(url);
         if (uiState != null) {
             uiState.setListUrl(url);
+            uiState.setListUrlTitle(taskTitle);
         }
         if (listUrlInput != null) {
             listUrlInput.setText(url);
         }
         sendConfigToPage(false);
-        log("已保存课程列表 URL" + (title == null || title.trim().isEmpty() ? "" : "：" + title));
+        log("已保存课程列表 URL" + (taskTitle.isEmpty() ? "" : "：" + taskTitle));
     }
 
     private boolean captureDiscoveredListUrlFromNavigation(String url) {
@@ -1390,10 +1423,11 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         String username = prefs.getString(KEY_USERNAME, "");
         String password = prefs.getString(KEY_PASSWORD, "");
         String listUrl = prefs.getString(KEY_LIST_URL, "");
-        String mode = prefs.getString(KEY_MODE, MODE_VIDEO);
+        String listUrlTitle = prefs.getString(KEY_LIST_URL_TITLE, "");
+        String mode = MODE_VIDEO;
         int dayToStartOn = prefs.getInt(KEY_DAY_TO_START_ON, 1);
-        boolean chooseCorrectly = prefs.getBoolean(KEY_CHOOSE_CORRECTLY, true);
-        String reportId = prefs.getString(KEY_REPORT_ID, "");
+        boolean chooseCorrectly = true;
+        String reportId = "";
         boolean autoFillLogin = prefs.getBoolean(KEY_AUTO_FILL_LOGIN, true);
         boolean autoSubmitLogin = prefs.getBoolean(KEY_AUTO_SUBMIT_LOGIN, true);
         boolean desktopMode = prefs.getBoolean(KEY_DESKTOP_MODE, true);
@@ -1403,6 +1437,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             uiState.setUsername(username);
             uiState.setPassword(password);
             uiState.setListUrl(listUrl);
+            uiState.setListUrlTitle(listUrlTitle);
             uiState.setMode(mode);
             uiState.setDayToStartOn(String.valueOf(dayToStartOn));
             uiState.setChooseCorrectly(chooseCorrectly);
@@ -1420,10 +1455,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         usernameInput.setText(username);
         passwordInput.setText(password);
         listUrlInput.setText(listUrl);
-        if (MODE_PAPER.equals(mode)) {
-            paperModeButton.setChecked(true);
-        } else {
-            videoModeButton.setChecked(true);
+        videoModeButton.setChecked(true);
+        if (paperModeButton != null) {
+            paperModeButton.setChecked(false);
         }
         dayInput.setText(String.valueOf(dayToStartOn));
         chooseCorrectlyCheck.setChecked(chooseCorrectly);
@@ -1438,6 +1472,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
 
     private void saveConfigFromForm(boolean silent) {
         boolean desktopModeBefore = prefs.getBoolean(KEY_DESKTOP_MODE, true);
+        String previousListUrl = prefs.getString(KEY_LIST_URL, "");
+        String previousListUrlTitle = prefs.getString(KEY_LIST_URL_TITLE, "");
         String username;
         String password;
         String listUrl;
@@ -1453,10 +1489,10 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             username = uiState.getUsername().trim();
             password = uiState.getPassword();
             listUrl = normalizeOptionalUrl(uiState.getListUrl());
-            mode = MODE_PAPER.equals(uiState.getMode()) ? MODE_PAPER : MODE_VIDEO;
+            mode = MODE_VIDEO;
             dayToStartOn = parsePositiveInt(uiState.getDayToStartOn(), 1);
-            chooseCorrectly = uiState.getChooseCorrectly();
-            reportId = uiState.getReportId().trim();
+            chooseCorrectly = true;
+            reportId = "";
             autoFillLogin = uiState.getAutoFillLogin();
             autoSubmitLogin = uiState.getAutoSubmitLogin();
             desktopMode = uiState.getDesktopMode();
@@ -1465,20 +1501,22 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             username = usernameInput.getText().toString().trim();
             password = passwordInput.getText().toString();
             listUrl = normalizeOptionalUrl(listUrlInput.getText().toString());
-            mode = paperModeButton.isChecked() ? MODE_PAPER : MODE_VIDEO;
+            mode = MODE_VIDEO;
             dayToStartOn = parsePositiveInt(dayInput.getText().toString(), 1);
-            chooseCorrectly = chooseCorrectlyCheck.isChecked();
-            reportId = reportIdInput.getText().toString().trim();
+            chooseCorrectly = true;
+            reportId = "";
             autoFillLogin = autoFillLoginCheck.isChecked();
             autoSubmitLogin = autoSubmitLoginCheck.isChecked();
             desktopMode = desktopModeCheck.isChecked();
             backgroundKeepAlive = backgroundKeepAliveCheck == null || backgroundKeepAliveCheck.isChecked();
         }
+        String listUrlTitle = listUrl.equals(previousListUrl) ? previousListUrlTitle : "";
 
         prefs.edit()
                 .putString(KEY_USERNAME, username)
                 .putString(KEY_PASSWORD, password)
                 .putString(KEY_LIST_URL, listUrl)
+                .putString(KEY_LIST_URL_TITLE, listUrlTitle)
                 .putString(KEY_MODE, mode)
                 .putBoolean(KEY_CHOOSE_CORRECTLY, chooseCorrectly)
                 .putString(KEY_REPORT_ID, reportId)
@@ -1491,6 +1529,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
 
         if (uiState != null) {
             uiState.setListUrl(listUrl);
+            uiState.setListUrlTitle(listUrlTitle);
             uiState.setMode(mode);
             uiState.setDayToStartOn(String.valueOf(dayToStartOn));
             uiState.setBackgroundKeepAlive(backgroundKeepAlive);
@@ -1503,7 +1542,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         syncBackgroundKeepAlive();
         sendConfigToPage(!silent);
         if (!silent) {
-            log("配置已保存：模式=" + (MODE_PAPER.equals(mode) ? "做题" : "刷课"));
+            log("配置已保存：模式=刷课");
         }
         if (desktopModeBefore != desktopMode) {
             log("浏览器模式已变更，正在重启内核以应用 UA/viewport 设置");
@@ -1516,9 +1555,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         config.put(KEY_USERNAME, prefs.getString(KEY_USERNAME, ""));
         config.put(KEY_PASSWORD, prefs.getString(KEY_PASSWORD, ""));
         config.put(KEY_LIST_URL, prefs.getString(KEY_LIST_URL, ""));
-        config.put(KEY_MODE, prefs.getString(KEY_MODE, MODE_VIDEO));
-        config.put(KEY_CHOOSE_CORRECTLY, prefs.getBoolean(KEY_CHOOSE_CORRECTLY, true));
-        config.put(KEY_REPORT_ID, prefs.getString(KEY_REPORT_ID, ""));
+        config.put(KEY_MODE, MODE_VIDEO);
+        config.put(KEY_CHOOSE_CORRECTLY, true);
+        config.put(KEY_REPORT_ID, "");
         config.put(KEY_DAY_TO_START_ON, prefs.getInt(KEY_DAY_TO_START_ON, 1));
         config.put(KEY_AUTO_FILL_LOGIN, prefs.getBoolean(KEY_AUTO_FILL_LOGIN, true));
         config.put(KEY_AUTO_SUBMIT_LOGIN, prefs.getBoolean(KEY_AUTO_SUBMIT_LOGIN, true));
@@ -1711,8 +1750,21 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 boolean passwordFilled = json.optBoolean("passwordFilled", false);
                 boolean submitted = json.optBoolean("submitted", false);
                 boolean captcha = json.optBoolean("captchaDetected", false);
+                String loginError = json.optString("loginError", "");
                 log("登录填充：账号=" + usernameFilled + " 密码=" + passwordFilled
-                        + " 提交=" + submitted + " 验证码=" + captcha);
+                        + " 提交=" + submitted + " 验证码=" + captcha
+                        + (loginError.isEmpty() ? "" : " 错误=" + loginError));
+                if (!loginError.isEmpty()) {
+                    prefs.edit().putBoolean(KEY_AUTOMATION_RUNNING, false).apply();
+                    listUrlDiscoveryRunning = false;
+                    setListUrlDiscoveryUi(false, "登录失败：" + loginError + "。请检查账号密码后重试。");
+                    setListUrlManualEntryVisible(false);
+                    if (uiState != null) {
+                        uiState.setOobeStep(2);
+                        uiState.setStatus("登录失败：" + loginError);
+                    }
+                    updateAutomationButtons();
+                }
             } else if ("automationLog".equals(type)) {
                 String messageText = json.optString("message", "");
                 String step = json.optString("step", "");
@@ -1754,8 +1806,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             } else if ("automationTotalProgress".equals(type)) {
                 int done = json.optInt("done", 0);
                 int total = json.optInt("total", 0);
+                String scope = json.optString("scope", "");
                 if (uiState != null && total > 0) {
-                    uiState.updateTotalCourseProgress(done, total);
+                    uiState.updateTotalCourseProgress(done, total, scope);
                 }
             } else if ("automationFinished".equals(type)) {
                 String messageText = json.optString("message", "自动化已完成");
@@ -1781,10 +1834,19 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             } else if ("listUrlDiscovered".equals(type)) {
                 saveDiscoveredListUrl(json.optString("url", ""), json.optString("title", ""));
             } else if ("listUrlDiscoveryFailed".equals(type)) {
+                String reason = json.optString("reason", "未找到可用任务");
                 listUrlDiscoveryRunning = false;
-                setListUrlDiscoveryUi(false, "");
-                setListUrlManualEntryVisible(true);
-                log("URL 获取失败：" + json.optString("reason", "未找到可用任务"));
+                pendingListUrlTitle = "";
+                setListUrlDiscoveryUi(false, reason);
+                boolean allowManualFallback = !reason.contains("登录失败")
+                        && !reason.contains("账号")
+                        && !reason.contains("密码")
+                        && !reason.contains("试卷/测验");
+                setListUrlManualEntryVisible(allowManualFallback);
+                if (uiState != null) {
+                    uiState.setOobeStep(2);
+                }
+                log("URL 获取失败：" + reason);
             } else {
                 log("扩展消息：" + json);
             }
