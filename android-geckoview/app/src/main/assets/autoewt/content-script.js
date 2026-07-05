@@ -196,6 +196,23 @@
     resetStuckWatchdog();
   }
 
+  function finishAutomation(message, payload) {
+    automationRunning = false;
+    resetDayScanState();
+    resetStuckWatchdog();
+    if (automationTimer) {
+      clearTimeout(automationTimer);
+      automationTimer = 0;
+    }
+    logAutomation(message, payload);
+    postMessage(Object.assign({
+      type: "automationFinished",
+      message,
+      url: location.href,
+      timestamp: Date.now()
+    }, payload || {}));
+  }
+
   function notePossibleStuck(reason, details) {
     if (!automationRunning || isLoginPage() || isVideoActivelyPlaying()) {
       resetStuckWatchdog();
@@ -1403,6 +1420,13 @@
     }
     if (result.totalDays > 0) {
       setNextAutomationDelay(COURSE_PROBE_RETRY_DELAY);
+      if (isCourseListExhausted()) {
+        finishAutomation("没有更多可刷课程，自动刷课已停止", {
+          totalDays: result.totalDays,
+          dayIndex: result.dayIndex + 1
+        });
+        return;
+      }
       notePossibleStuck("courseListNoCandidate", `${result.dayIndex + 1}/${result.totalDays}/${result.buttonCount}`);
       logAutomation("暂未找到未完成视频课程", {
         totalDays: result.totalDays,
@@ -1411,6 +1435,10 @@
       });
     } else {
       setNextAutomationDelay(COURSE_PROBE_RETRY_DELAY);
+      if (isCourseListExhausted()) {
+        finishAutomation("没有更多可刷课程，自动刷课已停止");
+        return;
+      }
       notePossibleStuck("courseListNoDays", location.href);
       logAutomation("等待课程列表加载");
     }
@@ -1539,6 +1567,22 @@
       dayIndex,
       buttonCount: candidates.length
     };
+  }
+
+  function isCourseListExhausted() {
+    if (isLoginPage() || document.querySelector("video")) {
+      return false;
+    }
+    const bodyText = compactText(document.body || document.documentElement);
+    if (!bodyText || /加载中|正在加载|请稍候|loading/i.test(bodyText)) {
+      return false;
+    }
+    if (/没有更多(?:必学|视频|学习|课程)?任务了?|暂无(?:必学|视频|学习|课程)?任务/.test(bodyText)) {
+      return true;
+    }
+    const hasCourseListContent = /视频课任务|学习任务|刷新进度|已学完|已完成|完成\s*\d+\s*\/\s*\d+/.test(bodyText);
+    const hasOpenCourseText = COURSE_ACTION_RE.test(bodyText) || STUDY_PROGRESS_RE.test(bodyText) || WATCH_PROGRESS_RE.test(bodyText);
+    return hasCourseListContent && !hasOpenCourseText;
   }
 
   function syncDayCursor(days, startIndex) {
