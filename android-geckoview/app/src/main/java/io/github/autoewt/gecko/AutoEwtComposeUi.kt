@@ -109,6 +109,7 @@ interface AutoEwtUiController {
     fun cycleLogModeFromUi()
     fun openUrlFromUi(url: String)
     fun openConfiguredCourseFromUi()
+    fun discoverListUrlFromUi()
     fun startAutomationFromUi()
     fun stopAutomationFromUi()
     fun requestFillLoginFromUi()
@@ -584,11 +585,10 @@ private fun ConfigIdentityPanel(controller: AutoEwtUiController, modifier: Modif
             label = { Text("课程列表 URL") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
         )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Button(onClick = controller::saveConfigFromUi) {
                 Text("保存配置")
@@ -597,6 +597,15 @@ private fun ConfigIdentityPanel(controller: AutoEwtUiController, modifier: Modif
                 Text("保存并打开")
             }
         }
+        Button(
+            onClick = controller::discoverListUrlFromUi,
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = ButtonDefaults.ButtonWithIconContentPadding
+        ) {
+            ActionIcon(R.drawable.ic_probe)
+            Spacer(Modifier.width(6.dp))
+            Text("自动获取课程列表 URL")
+        }
     }
 }
 
@@ -604,26 +613,9 @@ private fun ConfigIdentityPanel(controller: AutoEwtUiController, modifier: Modif
 @Composable
 private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier = Modifier) {
     val state = controller.state
+    var advancedExpanded by remember { mutableStateOf(false) }
     Panel(modifier = modifier) {
-        SectionTitle("运行模式")
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            FilterChip(
-                selected = state.mode == "video",
-                onClick = { state.mode = "video" },
-                label = { Text("刷课") },
-                leadingIcon = { ActionIcon(R.drawable.ic_play) }
-            )
-            FilterChip(
-                selected = state.mode == "paper",
-                onClick = { state.mode = "paper" },
-                label = { Text("做题") },
-                leadingIcon = { ActionIcon(R.drawable.ic_course) }
-            )
-        }
+        SectionTitle("任务设置")
         OutlinedTextField(
             value = state.dayToStartOn,
             onValueChange = { state.dayToStartOn = it.filter(Char::isDigit) },
@@ -645,21 +637,78 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
             label = { Text("report_id") }
         )
         HorizontalDivider()
-        SectionTitle("浏览器兼容")
-        CheckRow(
-            checked = state.autoFillLogin,
-            onCheckedChange = { state.autoFillLogin = it },
-            text = "自动填入账号密码"
-        )
-        CheckRow(
-            checked = state.autoSubmitLogin,
-            onCheckedChange = { state.autoSubmitLogin = it },
-            text = "填入后自动登录"
-        )
-        CheckRow(
-            checked = state.desktopMode,
-            onCheckedChange = { state.desktopMode = it },
-            text = "桌面浏览器模式"
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                SectionTitle("高级设置")
+                Text(
+                    text = "当前：${if (state.mode == "paper") "做题" else "刷课"}，${if (state.desktopMode) "桌面浏览器模式" else "移动浏览器模式"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            OutlinedButton(onClick = { advancedExpanded = !advancedExpanded }) {
+                Text(if (advancedExpanded) "收起" else "展开")
+            }
+        }
+        if (advancedExpanded) {
+            WarningBox("高级设置会改变自动化入口、登录行为和浏览器 UA/viewport。改错可能导致无法登录、日期/课程识别异常或触发浏览器重启；除非排查兼容问题，建议保持默认。")
+            SectionTitle("运行模式")
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                FilterChip(
+                    selected = state.mode == "video",
+                    onClick = { state.mode = "video" },
+                    label = { Text("刷课") },
+                    leadingIcon = { ActionIcon(R.drawable.ic_play) }
+                )
+                FilterChip(
+                    selected = state.mode == "paper",
+                    onClick = { state.mode = "paper" },
+                    label = { Text("做题") },
+                    leadingIcon = { ActionIcon(R.drawable.ic_course) }
+                )
+            }
+            SectionTitle("登录与浏览器兼容")
+            CheckRow(
+                checked = state.autoFillLogin,
+                onCheckedChange = { state.autoFillLogin = it },
+                text = "自动填入账号密码"
+            )
+            CheckRow(
+                checked = state.autoSubmitLogin,
+                onCheckedChange = { state.autoSubmitLogin = it },
+                text = "填入后自动登录"
+            )
+            CheckRow(
+                checked = state.desktopMode,
+                onCheckedChange = { state.desktopMode = it },
+                text = "桌面浏览器模式"
+            )
+        }
+    }
+}
+
+@Composable
+private fun WarningBox(text: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(10.dp),
+            style = MaterialTheme.typography.bodySmall
         )
     }
 }

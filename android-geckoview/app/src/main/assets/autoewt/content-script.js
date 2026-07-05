@@ -5,7 +5,6 @@
   const STEP_COURSE_LIST = "courseList";
   const STEP_VIDEO = "video";
   const DONE_RE = /已学完|已完成|已结束|已提交|已批改/;
-  const EXPIRED_RE = /已截止|已过期|已失效|超时/;
   const STUDY_PROGRESS_RE = /学\s*\d+(?:\.\d+)?\s*[%％]/;
   const COURSE_ACTION_RE = /去学习|开始学习|继续学习|播放|去收听|去查看|学\s*\d+(?:\.\d+)?\s*[%％]/;
   const EXACT_COURSE_ACTION_RE = /^(去学习|开始学习|继续学习|播放|去收听|去查看|学\s*\d+(?:\.\d+)?\s*[%％])$/;
@@ -18,8 +17,11 @@
   const DAY_SWITCH_DELAY = 2500;
   const COURSE_PROBE_RETRY_DELAY = 10000;
   const STUCK_RESTART_AFTER = 3;
+  const URL_DISCOVERY_RETRY_DELAY = 2500;
   const EXACT_STUDY_PROGRESS_RE = /^学\s*\d+(?:\.\d+)?\s*[%％]$/;
   const WATCH_PROGRESS_RE = /已看\s*\d+(?:\.\d+)?\s*[%％]/;
+  const DISCOVERY_FILTERS = ["进行中", "未开始", "已截止"];
+  const DISCOVERY_TASK_ACTION_RE = /查看详情|去完成|继续完成|去学习|开始学习|继续学习/;
   const missedCheckpointReplayElements = new WeakSet();
 
   let port = null;
@@ -44,6 +46,14 @@
   let videoEndReported = false;
   let lastReportedAutomation = "";
   let checkpointObserverInstalled = false;
+  let urlDiscoveryActive = false;
+  let urlDiscoveryTimer = 0;
+  let urlDiscoveryFilterIndex = 0;
+  let urlDiscoveryPendingFilter = "";
+  let urlDiscoveryAttempts = 0;
+  let urlDiscoveryInitialOverviewUrl = "";
+  let urlDiscoverySawHomeworkPage = false;
+  let urlDiscoveryTargetUrl = "";
   let childSessionActive = false;
   let fmEntryExitReported = false;
   let lastFmEntryUrl = "";
@@ -74,6 +84,15 @@
           }
         } else if (message.type === "fillLogin") {
           fillLogin("manual", Boolean(message.submit));
+        } else if (message.type === "discoverListUrl") {
+          config = Object.assign({}, config, message.config || {});
+          if (urlDiscoveryActive) {
+            scheduleListUrlDiscovery(0);
+          } else {
+            startListUrlDiscovery("manual", message.targetUrl || "");
+          }
+        } else if (message.type === "stopListUrlDiscovery") {
+          stopListUrlDiscovery();
         } else if (message.type === "automation") {
           config = Object.assign({}, config, message.config || {});
           if (message.action === "start") {
@@ -228,6 +247,272 @@
       url: location.href,
       timestamp: Date.now()
     }, payload));
+  }
+
+  function startListUrlDiscovery(reason, targetUrl) {
+    automationRunning = false;
+    urlDiscoveryActive = true;
+    urlDiscoveryFilterIndex = 0;
+    urlDiscoveryPendingFilter = "";
+    urlDiscoveryAttempts = 0;
+    urlDiscoveryInitialOverviewUrl = isTaskOverviewPage() ? location.href : "";
+    urlDiscoverySawHomeworkPage = false;
+    urlDiscoveryTargetUrl = String(targetUrl || "");
+    postListUrlDiscoveryLog("开始扫描任务列表 URL", { reason });
+    if (urlDiscoveryTargetUrl && urlDiscoveryInitialOverviewUrl) {
+      location.href = urlDiscoveryTargetUrl;
+      postListUrlDiscoveryLog("从旧任务详情页返回任务列表");
+      scheduleListUrlDiscovery(1000);
+      return;
+    }
+    scheduleListUrlDiscovery(300);
+  }
+
+  function stopListUrlDiscovery() {
+    urlDiscoveryActive = false;
+    if (urlDiscoveryTimer) {
+      clearTimeout(urlDiscoveryTimer);
+      urlDiscoveryTimer = 0;
+    }
+  }
+
+  function scheduleListUrlDiscovery(delay) {
+    if (!urlDiscoveryActive) {
+      return;
+    }
+    if (urlDiscoveryTimer) {
+      clearTimeout(urlDiscoveryTimer);
+    }
+    urlDiscoveryTimer = setTimeout(runListUrlDiscovery, delay);
+  }
+
+  function runListUrlDiscovery() {
+    if (!urlDiscoveryActive) {
+      return;
+    }
+    try {
+      listUrlDiscoveryStep();
+    } catch (error) {
+      postListUrlDiscoveryLog("扫描步骤异常", { error: String(error && error.message || error) });
+      scheduleListUrlDiscovery(URL_DISCOVERY_RETRY_DELAY);
+    }
+  }
+
+  function listUrlDiscoveryStep() {
+    urlDiscoveryAttempts += 1;
+    clickAgreementModal();
+
+    if (
+      isTaskOverviewPage()
+      && (urlDiscoverySawHomeworkPage || !urlDiscoveryInitialOverviewUrl || location.href !== urlDiscoveryInitialOverviewUrl)
+    ) {
+      const title = taskOverviewTitle();
+      stopListUrlDiscovery();
+      postMessage({
+        type: "listUrlDiscovered",
+        url: location.href,
+        title,
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    if (isStudentHomeworkPage()) {
+      urlDiscoverySawHomeworkPage = true;
+    }
+
+    if (isLoginPage()) {
+      const result = fillLogin("urlDiscovery", true);
+      postListUrlDiscoveryLog(result.submitted ? "已提交登录，等待进入学生端" : "正在登录以获取任务列表");
+      scheduleListUrlDiscovery(URL_DISCOVERY_RETRY_DELAY);
+      return;
+    }
+
+    if (!isStudentHomeworkPage()) {
+      if (urlDiscoveryTargetUrl && isTaskOverviewPage()) {
+        location.href = urlDiscoveryTargetUrl;
+        postListUrlDiscoveryLog("当前仍在旧任务详情页，继续返回任务列表");
+        scheduleListUrlDiscovery(1000);
+        return;
+      }
+      if (clickMyTaskNav()) {
+        postListUrlDiscoveryLog("已点击左侧我的任务");
+        scheduleListUrlDiscovery(3500);
+        return;
+      }
+      if (urlDiscoveryAttempts > 4) {
+        location.hash = "#/student/homework";
+        postListUrlDiscoveryLog("未找到我的任务入口，改用地址栏进入任务页");
+      } else {
+        postListUrlDiscoveryLog("等待学生端任务入口加载");
+      }
+      scheduleListUrlDiscovery(URL_DISCOVERY_RETRY_DELAY);
+      return;
+    }
+
+    hideCompletedDiscoveryTasks();
+
+    if (urlDiscoveryPendingFilter) {
+      const task = findDiscoveryTaskCandidate();
+      if (task) {
+        clickDiscoveryTask(task);
+        scheduleListUrlDiscovery(5000);
+        return;
+      }
+      urlDiscoveryPendingFilter = "";
+    }
+
+    if (urlDiscoveryFilterIndex < DISCOVERY_FILTERS.length) {
+      const filter = DISCOVERY_FILTERS[urlDiscoveryFilterIndex];
+      urlDiscoveryFilterIndex += 1;
+      if (clickDiscoveryFilter(filter)) {
+        urlDiscoveryPendingFilter = filter;
+        postListUrlDiscoveryLog(`扫描${filter}任务`);
+        scheduleListUrlDiscovery(3500);
+        return;
+      }
+      postListUrlDiscoveryLog(`未找到${filter}筛选项`);
+      scheduleListUrlDiscovery(800);
+      return;
+    }
+
+    const task = findDiscoveryTaskCandidate();
+    if (task) {
+      clickDiscoveryTask(task);
+      scheduleListUrlDiscovery(5000);
+      return;
+    }
+
+    stopListUrlDiscovery();
+    postMessage({
+      type: "listUrlDiscoveryFailed",
+      reason: "没有找到可点击的未完成任务；已完成任务已自动隐藏",
+      timestamp: Date.now()
+    });
+  }
+
+  function postListUrlDiscoveryLog(message, payload) {
+    postMessage(Object.assign({
+      type: "listUrlDiscoveryLog",
+      message,
+      url: location.href,
+      timestamp: Date.now()
+    }, payload || {}));
+  }
+
+  function isTaskOverviewPage() {
+    return /student-task-overview/i.test(location.href) && /homeworkId=/.test(location.href);
+  }
+
+  function isStudentHomeworkPage() {
+    return /#\/student\/homework/i.test(location.href);
+  }
+
+  function clickMyTaskNav() {
+    const candidates = Array.from(document.querySelectorAll("li, a, button, [role='button'], span, div"))
+      .filter((element) => {
+        if (!visible(element)) {
+          return false;
+        }
+        const text = compactText(element);
+        const rect = element.getBoundingClientRect();
+        return text === "我的任务"
+          && rect.left < viewportWidth() * 0.35
+          && rect.width <= 260
+          && rect.height <= 80;
+      })
+      .map((element) => element.closest("li, a, button, [role='button']") || element)
+      .filter(visible)
+      .sort((left, right) => elementArea(left) - elementArea(right));
+    const target = candidates[0] || null;
+    if (!target) {
+      return false;
+    }
+    const clickInfo = clickElementInfo(target);
+    requestNativeTap(clickInfo, "我的任务", "discoverNav");
+    return clickInfo.clicked;
+  }
+
+  function clickDiscoveryFilter(label) {
+    const candidates = Array.from(document.querySelectorAll("li, a, button, [role='button'], span, div"))
+      .filter((element) => {
+        if (!visible(element)) {
+          return false;
+        }
+        const text = compactText(element);
+        const rect = element.getBoundingClientRect();
+        return text === label
+          && rect.left < viewportWidth() * 0.5
+          && rect.width <= 260
+          && rect.height <= 90;
+      })
+      .map((element) => element.closest("li, a, button, [role='button']") || element)
+      .filter(visible)
+      .sort((left, right) => elementArea(left) - elementArea(right));
+    const target = candidates[0] || null;
+    if (!target) {
+      return false;
+    }
+    const clickInfo = clickElementInfo(target);
+    requestNativeTap(clickInfo, label, "discoverFilter");
+    return clickInfo.clicked;
+  }
+
+  function hideCompletedDiscoveryTasks() {
+    discoveryTaskCards(true).forEach((card) => {
+      card.style.display = "none";
+      card.setAttribute("data-autoewt-hidden-completed", "true");
+    });
+  }
+
+  function findDiscoveryTaskCandidate() {
+    const cards = discoveryTaskCards(false)
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return leftRect.top - rightRect.top || leftRect.left - rightRect.left;
+      });
+    return cards[0] || null;
+  }
+
+  function discoveryTaskCards(completed) {
+    return uniqueElements(Array.from(document.querySelectorAll("div[class], li, section"))
+      .filter((element) => {
+        if (!visible(element)) {
+          return false;
+        }
+        const rect = element.getBoundingClientRect();
+        const text = compactText(element);
+        if (rect.width < 120 || rect.height < 80 || text.length < 8 || text.length > 320) {
+          return false;
+        }
+        if (!DISCOVERY_TASK_ACTION_RE.test(text) || !/布置人|开始时间|截止时间|任务|假期|学习计划/.test(text)) {
+          return false;
+        }
+        const isCompleted = /已完成/.test(text);
+        if (completed) {
+          return isCompleted;
+        }
+        return !isCompleted;
+      }));
+  }
+
+  function clickDiscoveryTask(card) {
+    const detail = Array.from(card.querySelectorAll("a, button, [role='button'], div, span"))
+      .filter((element) => visible(element) && DISCOVERY_TASK_ACTION_RE.test(compactText(element)) && compactText(element).length <= 40)
+      .sort((left, right) => elementArea(left) - elementArea(right))[0] || card;
+    const label = compactText(card).replace(/\s+/g, " ").slice(0, 80);
+    const clickInfo = clickElementInfo(detail);
+    requestNativeTap(clickInfo, label || "查看详情", "discoverTask");
+    postListUrlDiscoveryLog("已点击任务详情", { label });
+  }
+
+  function taskOverviewTitle() {
+    const candidates = Array.from(document.querySelectorAll("h1, h2, h3, [class*='title'], body *"))
+      .filter((element) => visible(element))
+      .map((element) => compactText(element))
+      .filter((text) => text.length >= 4 && text.length <= 120 && !/首页|我的任务|我的班级/.test(text));
+    return candidates[0] || document.title || "";
   }
 
   function queryFirst(selectors) {
@@ -1193,7 +1478,7 @@
     const broad = candidates
       .filter((element) => {
         const text = compactText(element);
-        if (DONE_RE.test(text) || EXPIRED_RE.test(text)) {
+        if (DONE_RE.test(text)) {
           return false;
         }
         return text.length <= 40 && COURSE_ACTION_RE.test(text);
@@ -1273,7 +1558,7 @@
     for (let i = 0; current && i < 5; i += 1) {
       const style = window.getComputedStyle(current);
       const text = textOf(current);
-      if ((DONE_RE.test(text) && !isMissedCheckpointReplayContext(current)) || EXPIRED_RE.test(text)) {
+      if (DONE_RE.test(text) && !isMissedCheckpointReplayContext(current)) {
         return element;
       }
       if (text.length > 180) {
@@ -1417,11 +1702,11 @@
       return true;
     }
     const className = String(element.className || "");
-    if (/\b(disabled|disable|forbid|expired|finish|done)\b/i.test(className)) {
+    if (/\b(disabled|disable|forbid|finish|done)\b/i.test(className)) {
       return true;
     }
     const containerText = compactText(courseContainer(element));
-    return DONE_RE.test(containerText) || EXPIRED_RE.test(containerText);
+    return DONE_RE.test(containerText);
   }
 
   function isMissedCheckpointReplayContext(element) {

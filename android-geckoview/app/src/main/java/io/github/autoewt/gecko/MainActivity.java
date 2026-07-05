@@ -9,6 +9,7 @@ import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.text.InputType;
+import android.util.Log;
 import android.view.InputDevice;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -61,6 +62,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private static final String MODE_VIDEO = "video";
     private static final String MODE_PAPER = "paper";
     private static final String DEFAULT_URL = "https://teacher.ewt360.com/";
+    private static final String HOMEWORK_DISCOVERY_URL = "https://teacher.ewt360.com/ewtbend/bend/index/index.html#/student/homework";
     private static final String EXTENSION_URI = "resource://android/assets/autoewt/";
     private static final String EXTENSION_ID = "autoewt-geckoview@local";
 
@@ -85,6 +87,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private String lastUrl = DEFAULT_URL;
     private String pendingChildTaskKind = "";
     private String childTaskKind = "";
+    private boolean listUrlDiscoveryRunning = false;
     private WebExtension.Port activePort;
     private WebExtension bridgeExtension;
     private final ArrayDeque<GeckoSession> parentSessions = new ArrayDeque<>();
@@ -374,6 +377,13 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         );
         listUrlInput = addEditRow(form, "课程列表 URL", "README 中的 list_url，保存后可直接打开", false, InputType.TYPE_TEXT_VARIATION_URI);
 
+        dayInput = addEditRow(form, "从第几天开始", "默认 1", false, InputType.TYPE_CLASS_NUMBER);
+        chooseCorrectlyCheck = addCheckRow(form, "做题时选择正确答案");
+        reportIdInput = addEditRow(form, "report_id", "做题模式需要，可先留空", false, InputType.TYPE_CLASS_TEXT);
+
+        addSectionTitle(form, "高级设置");
+        addWarningText(form, "高级设置会改变自动化入口、登录行为和浏览器 UA/viewport。改错可能导致无法登录、日期/课程识别异常或触发浏览器重启；除非排查兼容问题，建议保持默认。");
+
         addSectionTitle(form, "运行模式");
         modeGroup = new RadioGroup(this);
         modeGroup.setOrientation(RadioGroup.HORIZONTAL);
@@ -385,11 +395,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         modeGroup.addView(paperModeButton);
         form.addView(modeGroup);
 
-        dayInput = addEditRow(form, "从第几天开始", "默认 1", false, InputType.TYPE_CLASS_NUMBER);
-        chooseCorrectlyCheck = addCheckRow(form, "做题时选择正确答案");
-        reportIdInput = addEditRow(form, "report_id", "做题模式需要，可先留空", false, InputType.TYPE_CLASS_TEXT);
-
-        addSectionTitle(form, "浏览器兼容");
+        addSectionTitle(form, "登录与浏览器兼容");
         autoFillLoginCheck = addCheckRow(form, "进入登录页后自动填入账号密码");
         autoSubmitLoginCheck = addCheckRow(form, "填入后自动点击登录按钮");
         desktopModeCheck = addCheckRow(form, "使用桌面浏览器模式打开网页");
@@ -414,6 +420,16 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         });
         buttonRow.addView(saveOpenButton, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
+        Button discoverButton = new Button(this);
+        discoverButton.setText("自动获取课程列表 URL");
+        discoverButton.setOnClickListener(v -> discoverListUrlFromUi());
+        LinearLayout.LayoutParams discoverParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        discoverParams.setMargins(0, dp(8), 0, 0);
+        form.addView(discoverButton, discoverParams);
+
         TextView hint = new TextView(this);
         hint.setText("提示：如果登录页有验证码，应用只会填入账号密码，不会绕过验证码。若网页显示异常，可切换桌面浏览器模式后重启内核。");
         hint.setTextColor(Color.rgb(96, 96, 96));
@@ -431,6 +447,19 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         view.setTextSize(18);
         view.setPadding(0, dp(16), 0, dp(6));
         parent.addView(view);
+    }
+
+    private void addWarningText(LinearLayout parent, String text) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextColor(Color.rgb(126, 43, 32));
+        view.setTextSize(13);
+        view.setPadding(dp(12), dp(10), dp(12), dp(10));
+        view.setBackgroundColor(Color.rgb(255, 237, 232));
+        parent.addView(view, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
     }
 
     private EditText addEditRow(
@@ -545,6 +574,12 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     }
 
     @Override
+    public void discoverListUrlFromUi() {
+        saveConfigFromForm(true);
+        startListUrlDiscovery();
+    }
+
+    @Override
     public void startAutomationFromUi() {
         saveConfigFromForm(true);
         startAutomation();
@@ -630,6 +665,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 status(success ? "页面加载完成" : "页面加载失败");
                 setLoadProgress(success ? 100 : 0);
                 sendConfigToPage(false);
+                sendListUrlDiscoveryCommand();
             }
 
             @Override
@@ -660,6 +696,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         targetSession.setNavigationDelegate(new GeckoSession.NavigationDelegate() {
             @Override
             public GeckoResult<GeckoSession> onNewSession(GeckoSession geckoSession, String uri) {
+                captureDiscoveredListUrlFromNavigation(uri);
                 GeckoSession childSession = buildSession();
                 parentSessions.push(MainActivity.this.session);
                 childTaskKind = pendingChildTaskKind;
@@ -677,6 +714,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession geckoSession, GeckoSession.NavigationDelegate.LoadRequest request) {
                 if (request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW) {
                     log("检测到新窗口请求：" + request.uri);
+                    captureDiscoveredListUrlFromNavigation(request.uri);
                 }
                 return GeckoResult.fromValue(AllowOrDeny.ALLOW);
             }
@@ -689,6 +727,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                     Boolean hasUserGesture
             ) {
                 if (geckoSession == MainActivity.this.session && url != null && !url.isEmpty()) {
+                    captureDiscoveredListUrlFromNavigation(url);
                     lastUrl = url;
                     if (shouldPersistUrl(url)) {
                         prefs.edit().putString(KEY_LAST_URL, url).apply();
@@ -783,6 +822,56 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         log("已请求填入登录表单");
     }
 
+    private void startListUrlDiscovery() {
+        String username = prefs.getString(KEY_USERNAME, "");
+        String password = prefs.getString(KEY_PASSWORD, "");
+        if (username.trim().isEmpty() || password.isEmpty()) {
+            log("请先填写账号和密码，再自动获取课程列表 URL");
+            showConfigPage();
+            return;
+        }
+        prefs.edit()
+                .putBoolean(KEY_AUTOMATION_RUNNING, false)
+                .putBoolean(KEY_AUTO_FILL_LOGIN, true)
+                .putBoolean(KEY_AUTO_SUBMIT_LOGIN, true)
+                .apply();
+        listUrlDiscoveryRunning = true;
+        pendingChildTaskKind = "";
+        childTaskKind = "";
+        updateAutomationButtons();
+        closeAllChildSessions("discoverListUrl");
+        showBrowserPage();
+        setBrowserVisibleFromUi(true);
+        log("开始自动获取课程列表 URL：将隐藏已完成任务，并扫描进行中、未开始、已截止任务");
+        load(HOMEWORK_DISCOVERY_URL);
+        sendListUrlDiscoveryCommand();
+    }
+
+    private void sendListUrlDiscoveryCommand() {
+        if (!listUrlDiscoveryRunning) {
+            return;
+        }
+        JSONObject message = new JSONObject();
+        try {
+            message.put("type", "discoverListUrl");
+            message.put("targetUrl", HOMEWORK_DISCOVERY_URL);
+            message.put("config", buildConfigJson());
+            message.put("at", System.currentTimeMillis());
+        } catch (JSONException ignored) {
+        }
+        postToConnectedPorts(message);
+    }
+
+    private void sendStopListUrlDiscoveryCommand() {
+        JSONObject message = new JSONObject();
+        try {
+            message.put("type", "stopListUrlDiscovery");
+            message.put("at", System.currentTimeMillis());
+        } catch (JSONException ignored) {
+        }
+        postToConnectedPorts(message);
+    }
+
     private void startAutomation() {
         String listUrl = configuredListUrl();
         String username = prefs.getString(KEY_USERNAME, "");
@@ -799,6 +888,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 .apply();
         pendingChildTaskKind = "";
         childTaskKind = "";
+        listUrlDiscoveryRunning = false;
         updateAutomationButtons();
         log("自动刷课已启动");
         closeAllChildSessions("start");
@@ -812,6 +902,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         prefs.edit().putBoolean(KEY_AUTOMATION_RUNNING, false).apply();
         pendingChildTaskKind = "";
         childTaskKind = "";
+        listUrlDiscoveryRunning = false;
         updateAutomationButtons();
         sendAutomationCommand("stop");
         closeAllChildSessions("stop");
@@ -915,6 +1006,43 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         }
         log("检测到自动化卡死，重启浏览器：" + reason);
         restartSession();
+    }
+
+    private void saveDiscoveredListUrl(String rawUrl, String title) {
+        String url = normalizeOptionalUrl(rawUrl);
+        if (!isDiscoveredListUrl(url)) {
+            log("URL 获取结果无效：" + rawUrl);
+            return;
+        }
+        listUrlDiscoveryRunning = false;
+        sendStopListUrlDiscoveryCommand();
+        prefs.edit()
+                .putString(KEY_LIST_URL, url)
+                .putString(KEY_LAST_URL, url)
+                .apply();
+        lastUrl = url;
+        setUrlText(url);
+        if (uiState != null) {
+            uiState.setListUrl(url);
+        }
+        if (listUrlInput != null) {
+            listUrlInput.setText(url);
+        }
+        sendConfigToPage(false);
+        log("已保存课程列表 URL" + (title == null || title.trim().isEmpty() ? "" : "：" + title));
+    }
+
+    private boolean captureDiscoveredListUrlFromNavigation(String url) {
+        if (!listUrlDiscoveryRunning || !isDiscoveredListUrl(url)) {
+            return false;
+        }
+        log("URL 获取：捕获任务详情 URL");
+        saveDiscoveredListUrl(url, "");
+        return true;
+    }
+
+    private boolean isDiscoveredListUrl(String url) {
+        return url != null && url.contains("student-task-overview") && url.contains("homeworkId=");
     }
 
     private void loadConfigIntoForm() {
@@ -1112,6 +1240,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private void log(String message) {
         String time = new SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(new Date());
         String line = "[" + time + "] " + message;
+        Log.d("AutoEwt", line);
         logBuffer.append(line).append('\n');
         int maxLogChars = 16000;
         if (logBuffer.length() > maxLogChars) {
@@ -1174,6 +1303,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             }
             port.postMessage(hello);
             sendConfigToPage(false);
+            sendListUrlDiscoveryCommand();
             log("WebExtension port connected: " + port.name);
         }
 
@@ -1267,6 +1397,13 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 closeChildSession(json.optString("reason", "page"));
             } else if ("restartBrowser".equals(type)) {
                 restartBrowserFromAutomation(json.optString("reason", "unknown"), json.optString("url", ""));
+            } else if ("listUrlDiscoveryLog".equals(type)) {
+                log("URL 获取：" + json.optString("message", ""));
+            } else if ("listUrlDiscovered".equals(type)) {
+                saveDiscoveredListUrl(json.optString("url", ""), json.optString("title", ""));
+            } else if ("listUrlDiscoveryFailed".equals(type)) {
+                listUrlDiscoveryRunning = false;
+                log("URL 获取失败：" + json.optString("reason", "未找到可用任务"));
             } else {
                 log("扩展消息：" + json);
             }
