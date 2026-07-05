@@ -74,6 +74,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private static final String EXTENSION_URI = "resource://android/assets/autoewt/";
     private static final String EXTENSION_ID = "autoewt-geckoview@local";
     private static final int REQUEST_POST_NOTIFICATIONS = 41;
+    private static GeckoRuntime sharedRuntime;
 
     private GeckoRuntime runtime;
     private GeckoSession session;
@@ -163,7 +164,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
 
     private void scheduleSelfRestart() {
         Intent intent = new Intent(this, MainActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent pendingIntent = PendingIntent.getActivity(
                 this,
                 7,
@@ -174,10 +175,16 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         if (alarmManager != null) {
             alarmManager.set(
                     AlarmManager.ELAPSED_REALTIME,
-                    android.os.SystemClock.elapsedRealtime() + 1000,
+                    android.os.SystemClock.elapsedRealtime() + 5000,
                     pendingIntent
             );
         }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
     }
 
     @Override
@@ -704,12 +711,17 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     }
 
     private void createRuntime() {
+        if (sharedRuntime != null) {
+            runtime = sharedRuntime;
+            return;
+        }
         GeckoRuntimeSettings settings = new GeckoRuntimeSettings.Builder()
                 .javaScriptEnabled(true)
                 .remoteDebuggingEnabled(BuildConfig.DEBUG)
                 .consoleOutput(BuildConfig.DEBUG)
                 .build();
-        runtime = GeckoRuntime.create(this, settings);
+        sharedRuntime = GeckoRuntime.create(getApplicationContext(), settings);
+        runtime = sharedRuntime;
     }
 
     private void createSession() {
@@ -1167,10 +1179,10 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         Intent intent = new Intent(this, AutoEwtForegroundService.class);
         intent.setAction(AutoEwtForegroundService.ACTION_START);
         intent.putExtra(AutoEwtForegroundService.EXTRA_STATUS, backgroundNotificationStatus());
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent);
-        } else {
+        try {
             startService(intent);
+        } catch (RuntimeException error) {
+            log("后台保活通知启动失败，继续使用 WakeLock 保底：" + error.getClass().getSimpleName());
         }
     }
 

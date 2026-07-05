@@ -17,18 +17,22 @@ public class AutoEwtForegroundService extends Service {
 
     private static final String CHANNEL_ID = "autoewt_background";
     private static final int NOTIFICATION_ID = 3601;
+    private boolean foregroundStarted = false;
 
     @Override
     public void onCreate() {
         super.onCreate();
         ensureNotificationChannel();
+        startForegroundSafely(buildNotification("正在准备后台保活"));
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? ACTION_START : intent.getAction();
         if (ACTION_STOP.equals(action)) {
-            stopForeground(true);
+            if (foregroundStarted) {
+                stopForeground(true);
+            }
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -37,14 +41,9 @@ public class AutoEwtForegroundService extends Service {
         Notification notification = buildNotification(status == null || status.trim().isEmpty()
                 ? "自动化运行中，点击返回应用"
                 : status);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            );
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
+        if (!startForegroundSafely(notification)) {
+            stopSelf(startId);
+            return START_NOT_STICKY;
         }
         return START_STICKY;
     }
@@ -52,6 +51,31 @@ public class AutoEwtForegroundService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+    private boolean startForegroundSafely(Notification notification) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                        NOTIFICATION_ID,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                );
+            } else {
+                startForeground(NOTIFICATION_ID, notification);
+            }
+            foregroundStarted = true;
+            return true;
+        } catch (RuntimeException typedError) {
+            try {
+                startForeground(NOTIFICATION_ID, notification);
+                foregroundStarted = true;
+                return true;
+            } catch (RuntimeException plainError) {
+                foregroundStarted = false;
+                return false;
+            }
+        }
     }
 
     private Notification buildNotification(String status) {
