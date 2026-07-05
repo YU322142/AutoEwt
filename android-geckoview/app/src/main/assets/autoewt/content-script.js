@@ -19,6 +19,7 @@
   const DAY_SWITCH_DELAY = 2500;
   const COURSE_PROBE_RETRY_DELAY = 10000;
   const LESSON_OPEN_WAIT_MS = 20000;
+  const PLAY_VIDEOS_PLAYER_WAIT_MS = 25000;
   const STUCK_RESTART_AFTER = 3;
   const URL_DISCOVERY_RETRY_DELAY = 2500;
   const EXACT_STUDY_PROGRESS_RE = /^学\s*\d+(?:\.\d+)?\s*[%％]$/;
@@ -46,6 +47,8 @@
   let lastDayClickAt = 0;
   let lastPlaylistClickAt = 0;
   let lastPlaylistClickSignature = "";
+  let lastPlayVideosUrl = "";
+  let playVideosEnteredAt = 0;
   let lastCheckpointTapAt = 0;
   let lastCheckpointSignature = "";
   let lastStuckSignature = "";
@@ -1073,6 +1076,28 @@
     return /\/homework\/play-videos|#\/homework\/play-videos/i.test(location.href);
   }
 
+  function currentPlayVideosLessonId() {
+    if (!isPlayVideosPage()) {
+      return "";
+    }
+    const match = /[?&]lessonId=([^&#]+)/.exec(location.href);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  function shouldWaitForRequestedLessonPlayer() {
+    const lessonId = currentPlayVideosLessonId();
+    if (!lessonId || document.querySelector("video")) {
+      return false;
+    }
+    if (lastPlayVideosUrl !== location.href) {
+      lastPlayVideosUrl = location.href;
+      playVideosEnteredAt = Date.now();
+      lastPlaylistClickSignature = "";
+      lastPlaylistClickAt = 0;
+    }
+    return Date.now() - playVideosEnteredAt <= PLAY_VIDEOS_PLAYER_WAIT_MS;
+  }
+
   function clickVideoPlaylistItem() {
     const candidates = findVideoPlaylistItems();
     const candidate = candidates[0] || null;
@@ -1410,6 +1435,9 @@
     if (document.querySelector("video")) {
       return STEP_VIDEO;
     }
+    if (isPlayVideosPage()) {
+      return STEP_VIDEO;
+    }
     if (isLoginPage()) {
       return STEP_LOGIN;
     }
@@ -1570,16 +1598,21 @@
       return;
     }
     if (isPlayVideosPage()) {
-      const playlistResult = clickVideoPlaylistItem();
-      if (playlistResult.clicked) {
-        noteAutomationProgress();
-        setNextAutomationDelay(DAY_SWITCH_DELAY);
-        logAutomation("已点击视频小节", { label: playlistResult.label });
+      if (shouldWaitForRequestedLessonPlayer()) {
+        resetStuckWatchdog();
+        setNextAutomationDelay(DEFAULT_AUTOMATION_DELAY);
+        logAutomation("等待当前视频播放器加载", { lessonId: currentPlayVideosLessonId() });
+        return;
+      }
+      if (currentPlayVideosLessonId()) {
+        setNextAutomationDelay(COURSE_PROBE_RETRY_DELAY);
+        notePossibleStuck("playVideosRequestedLessonNoPlayer", currentPlayVideosLessonId());
+        logAutomation("当前视频播放器加载较慢，继续等待", { lessonId: currentPlayVideosLessonId() });
         return;
       }
       setNextAutomationDelay(COURSE_PROBE_RETRY_DELAY);
-      notePossibleStuck("playVideosNoPlayer", location.href);
-      logAutomation("等待视频小节或播放器加载");
+      notePossibleStuck("playVideosNoRequestedLessonNoPlayer", location.href);
+      logAutomation("等待当前视频播放器加载，避免误点右侧课程");
       return;
     }
 
