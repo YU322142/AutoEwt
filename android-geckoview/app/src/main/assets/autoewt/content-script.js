@@ -185,6 +185,39 @@
     });
   }
 
+  function reportTotalCourseProgress() {
+    const progress = totalCourseProgress();
+    if (!progress) {
+      return;
+    }
+    postMessage({
+      type: "automationTotalProgress",
+      done: progress.done,
+      total: progress.total,
+      progress: progress.done / progress.total,
+      timestamp: Date.now()
+    });
+  }
+
+  function totalCourseProgress() {
+    const bodyText = compactText(document.body || document.documentElement);
+    if (!bodyText) {
+      return null;
+    }
+    const matches = [];
+    const pattern = /已完成\s*(\d+)\s*\/\s*(\d+)/g;
+    let match = pattern.exec(bodyText);
+    while (match) {
+      const done = Number(match[1]);
+      const total = Number(match[2]);
+      if (Number.isFinite(done) && Number.isFinite(total) && total > 0) {
+        matches.push({ done, total });
+      }
+      match = pattern.exec(bodyText);
+    }
+    return matches.sort((left, right) => right.total - left.total || right.done - left.done)[0] || null;
+  }
+
   function resetStuckWatchdog() {
     lastStuckSignature = "";
     stuckCount = 0;
@@ -1412,6 +1445,7 @@
       return;
     }
 
+    reportTotalCourseProgress();
     const result = clickNextCourse();
     reportDayProgress(result);
     if (result.clicked) {

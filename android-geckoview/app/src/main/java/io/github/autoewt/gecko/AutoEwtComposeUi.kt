@@ -85,6 +85,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.launch
 import org.mozilla.geckoview.GeckoView
+import java.util.Locale
 
 data class AutoEwtListUrlCandidate(
     val id: String,
@@ -152,6 +153,8 @@ class AutoEwtUiState {
     var backgroundKeepAlive by mutableStateOf(true)
     var notificationPermissionGranted by mutableStateOf(true)
     var oobeVisible by mutableStateOf(false)
+    var totalCourseDone by mutableIntStateOf(0)
+    var totalCourses by mutableIntStateOf(0)
     var totalCourseDay by mutableIntStateOf(0)
     var totalCourseDays by mutableIntStateOf(0)
     var listUrlDiscoveryRunning by mutableStateOf(false)
@@ -183,12 +186,23 @@ class AutoEwtUiState {
         totalCourseDay = day.coerceIn(0, totalCourseDays)
     }
 
+    fun updateTotalCourseProgress(done: Int, total: Int) {
+        totalCourses = total.coerceAtLeast(0)
+        totalCourseDone = done.coerceIn(0, totalCourses)
+    }
+
+    fun clearTotalCourseProgress() {
+        totalCourseDone = 0
+        totalCourses = 0
+    }
+
     fun clearCourseDayProgress() {
         totalCourseDay = 0
         totalCourseDays = 0
     }
 
     fun clearAutomationProgress() {
+        clearTotalCourseProgress()
         clearCourseDayProgress()
         loadProgress = 0
         videoStatus = ""
@@ -553,11 +567,13 @@ private fun AddressBar(
 
 @Composable
 private fun RunStatusPanel(state: AutoEwtUiState) {
+    val totalCourses = state.totalCourses
     val totalDays = state.totalCourseDays
+    val hasTotalCourseProgress = totalCourses > 0
     val hasDayProgress = totalDays > 0
     val hasVideoProgress = state.videoStatus.isNotBlank()
     val hasLoadProgress = state.loadProgress in 1..99
-    if (!hasDayProgress && !hasVideoProgress && !hasLoadProgress) {
+    if (!hasTotalCourseProgress && !hasDayProgress && !hasVideoProgress && !hasLoadProgress) {
         return
     }
     Column(
@@ -588,10 +604,19 @@ private fun RunStatusPanel(state: AutoEwtUiState) {
                 overflow = TextOverflow.Ellipsis
             )
         }
+        if (hasTotalCourseProgress) {
+            val done = state.totalCourseDone.coerceIn(0, totalCourses)
+            val percent = done.toFloat() / totalCourses.toFloat() * 100f
+            ProgressMetric(
+                label = "总刷课进度",
+                value = "$done / $totalCourses  ${String.format(Locale.ROOT, "%.1f", percent)}%",
+                progress = done.toFloat() / totalCourses.toFloat()
+            )
+        }
         if (hasDayProgress) {
             val day = state.totalCourseDay.coerceIn(1, totalDays)
             ProgressMetric(
-                label = "总刷课进度",
+                label = "日期进度",
                 value = "第 $day / $totalDays 天",
                 progress = day.toFloat() / totalDays.toFloat()
             )

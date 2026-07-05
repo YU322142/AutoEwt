@@ -1751,6 +1751,12 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 if (uiState != null && day > 0 && totalDays > 0) {
                     uiState.updateCourseDayProgress(day, totalDays);
                 }
+            } else if ("automationTotalProgress".equals(type)) {
+                int done = json.optInt("done", 0);
+                int total = json.optInt("total", 0);
+                if (uiState != null && total > 0) {
+                    uiState.updateTotalCourseProgress(done, total);
+                }
             } else if ("automationFinished".equals(type)) {
                 String messageText = json.optString("message", "自动化已完成");
                 log("自动化完成：" + messageText);
