@@ -1948,22 +1948,48 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             log("原生点击坐标无效：" + label);
             return;
         }
-        if (uiState != null && !uiState.getBrowserVisible()) {
+        boolean browserWasHidden = uiState != null && !uiState.getBrowserVisible();
+        if (browserWasHidden) {
             uiState.setBrowserVisible(true);
             log("需要原生点击，已临时显示浏览器");
         }
+        dispatchNativeTapWhenReady(clientX, clientY, viewportWidth, viewportHeight, label, browserWasHidden ? 1 : 0);
+    }
 
-        geckoView.post(() -> {
+    private void dispatchNativeTapWhenReady(
+            double clientX,
+            double clientY,
+            double viewportWidth,
+            double viewportHeight,
+            String label,
+            int attempt
+    ) {
+        int delayMs = attempt <= 0 ? 0 : 160;
+        geckoView.postDelayed(() -> {
             int viewWidth = geckoView.getWidth();
             int viewHeight = geckoView.getHeight();
-            if (viewWidth <= 0 || viewHeight <= 0) {
-                log("原生点击失败：浏览器视图尚未布局");
+            if (viewWidth < 32 || viewHeight < 32) {
+                if (uiState != null && !uiState.getBrowserVisible()) {
+                    uiState.setBrowserVisible(true);
+                }
+                if (attempt < 12) {
+                    if (attempt == 1) {
+                        log("等待浏览器恢复布局后点击：" + label);
+                    }
+                    dispatchNativeTapWhenReady(clientX, clientY, viewportWidth, viewportHeight, label, attempt + 1);
+                } else {
+                    log("原生点击失败：浏览器视图仍处于隐藏布局：" + label);
+                }
                 return;
             }
-            float x = clamp((float) (clientX / viewportWidth * viewWidth), 1, viewWidth - 1);
-            float y = clamp((float) (clientY / viewportHeight * viewHeight), 1, viewHeight - 1);
+            float rawX = (float) clientX;
+            float rawY = (float) clientY;
+            float scaledX = (float) (clientX / viewportWidth * viewWidth);
+            float scaledY = (float) (clientY / viewportHeight * viewHeight);
+            float x = clamp(rawX >= 0 && rawX <= viewWidth ? rawX : scaledX, 1, viewWidth - 1);
+            float y = clamp(rawY >= 0 && rawY <= viewHeight ? rawY : scaledY, 1, viewHeight - 1);
             dispatchTapToGeckoView(x, y, label);
-        });
+        }, delayMs);
     }
 
     private void dispatchTapToGeckoView(float x, float y, String label) {

@@ -1439,7 +1439,7 @@
     dayListSignature = "";
     lastDayClickAt = 0;
     resetCourseGroupScanState();
-    clearCourseClickState();
+    clearCourseClickState(true);
     resetStuckWatchdog();
   }
 
@@ -1449,12 +1449,14 @@
     lastCourseGroupClickAt = 0;
   }
 
-  function clearCourseClickState() {
+  function clearCourseClickState(clearFinishedOneClick) {
     lastLessonClickSignature = "";
     lastLessonClickLabel = "";
     lastLessonClickUrl = "";
     failedCourseSignatures.clear();
-    finishedOneClickSignatures.clear();
+    if (clearFinishedOneClick) {
+      finishedOneClickSignatures.clear();
+    }
   }
 
   function shouldPauseAutomationForVisibility() {
@@ -1810,6 +1812,10 @@
     return completionProgresses(text)[0] || null;
   }
 
+  function isStandaloneCompletionProgressText(text) {
+    return /^完成\s*\d+\s*\/\s*\d+$/.test(String(text || "").trim());
+  }
+
   function clickNextIncompleteCourseGroup(totalDays, dayIndex) {
     const groups = findCourseGroups();
     syncCourseGroupCursor(groups);
@@ -1881,7 +1887,13 @@
           return false;
         }
         const text = compactText(element);
-        if (text.length < 4 || text.length > 180 || isCourseDayText(text)) {
+        if (
+          text.length < 4
+          || text.length > 180
+          || isStandaloneCompletionProgressText(text)
+          || isCourseDayText(text)
+          || isCourseDayColumnElement(element)
+        ) {
           return false;
         }
         if (isQuizCourseElement(element)) {
@@ -1900,7 +1912,11 @@
           return false;
         }
         const text = compactText(element);
-        return !isCourseDayText(text) && !isQuizCourseElement(element) && isIncompleteCourseGroup(element);
+        return !isCourseDayText(text)
+          && !isStandaloneCompletionProgressText(text)
+          && !isCourseDayColumnElement(element)
+          && !isQuizCourseElement(element)
+          && isIncompleteCourseGroup(element);
       });
 
     return uniqueElements(candidates)
@@ -1974,7 +1990,14 @@
   }
 
   function isIncompleteCourseGroup(element) {
-    const progress = firstCompletionProgress(compactText(element));
+    if (isCourseDayColumnElement(element)) {
+      return false;
+    }
+    const text = compactText(element);
+    if (isStandaloneCompletionProgressText(text)) {
+      return false;
+    }
+    const progress = firstCompletionProgress(text);
     return Boolean(progress && progress.done < progress.total);
   }
 
@@ -1986,7 +2009,6 @@
     lastCourseGroupClickAt = now;
     clearCourseClickState();
     const clickInfo = clickElementInfo(group);
-    requestNativeTap(clickInfo, label || courseGroupLabel(group), "courseGroup");
     return clickInfo.clicked;
   }
 
@@ -2014,6 +2036,10 @@
     if (dayCursorIndex < startIndex) {
       dayCursorIndex = startIndex >= days.length ? days.length : startIndex;
     }
+    if (dayCursorIndex < days.length && isCompletedCourseDay(days[dayCursorIndex])) {
+      const nextIndex = nextAvailableDayIndex(days, dayCursorIndex, startIndex);
+      dayCursorIndex = nextIndex >= 0 ? nextIndex : days.length;
+    }
   }
 
   function clickCourseDay(day) {
@@ -2024,10 +2050,7 @@
     lastDayClickAt = now;
     resetCourseGroupScanState();
     clearCourseClickState();
-    const label = extractDayDateLabel(day) || compactText(day).slice(0, 40);
-    const clickInfo = clickElementInfo(day);
-    requestNativeTap(clickInfo, label, "day");
-    return clickInfo.clicked;
+    return clickElementInfo(day).clicked;
   }
 
   function findCourseDays() {
@@ -2075,6 +2098,45 @@
     return DAY_DATE_RE.test(text) || DAY_INDEX_RE.test(text);
   }
 
+  function courseDayProgress(element) {
+    return firstCompletionProgress(compactText(element));
+  }
+
+  function isCompletedCourseDay(element) {
+    const progress = courseDayProgress(element);
+    return Boolean(progress && progress.done >= progress.total);
+  }
+
+  function isCourseDayColumnElement(element) {
+    if (!element || !visible(element)) {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    const width = viewportWidth();
+    if (width <= 0 || rect.left > width * 0.42) {
+      return false;
+    }
+    let current = element;
+    for (let depth = 0; current && current !== document.body && depth < 5; depth += 1) {
+      const text = compactText(current);
+      const currentRect = current.getBoundingClientRect();
+      if (
+        text.length <= 160
+        && currentRect.left <= width * 0.42
+        && currentRect.width <= width * 0.45
+        && isCourseDayText(text)
+        && /完成\s*\d+\s*\/\s*\d+/.test(text)
+      ) {
+        return true;
+      }
+      current = current.parentElement;
+    }
+    const text = compactText(element);
+    return rect.right <= width * 0.34
+      && /完成\s*\d+\s*\/\s*\d+/.test(text)
+      && text.length <= 80;
+  }
+
   function sortCourseDays(days) {
     return uniqueElements(days)
       .sort((left, right) => {
@@ -2106,27 +2168,52 @@
   }
 
   function findSelectedCourseDayIndex(days) {
-    let selected = days.findIndex((day) => day.getAttribute("data-active") === "true");
+    const currentDate = currentTaskDateLabel();
+    if (currentDate) {
+      const selectedByTitle = days.findIndex((day) => extractDayDateLabel(day) === currentDate);
+      if (selectedByTitle >= 0) {
+        return selectedByTitle;
+      }
+    }
+    let selected = days.findIndex((day) => day.getAttribute("data-active") === "true" && !isCompletedCourseDay(day));
     if (selected >= 0) {
       return selected;
     }
     selected = days.findIndex((day) => {
       const className = String(day.className || "");
       const ariaSelected = day.getAttribute("aria-selected");
-      return ariaSelected === "true" || /\b(active|selected|current|checked)\b/i.test(className);
+      return !isCompletedCourseDay(day) && (ariaSelected === "true" || /\b(active|selected|current|checked)\b/i.test(className));
     });
     if (selected >= 0) {
       return selected;
     }
-    const currentDate = currentTaskDateLabel();
-    if (!currentDate) {
-      return -1;
-    }
-    return days.findIndex((day) => extractDayDateLabel(day) === currentDate);
+    return -1;
   }
 
   function currentTaskDateLabel() {
+    const width = viewportWidth();
     const nodes = Array.from(document.querySelectorAll("body *")).filter(visible);
+    const titleCandidates = nodes
+      .filter((node) => {
+        const text = compactText(node);
+        const rect = node.getBoundingClientRect();
+        return text.length <= 100
+          && DAY_DATE_RE.test(text)
+          && /学习任务|视频课任务|课程安排|任务/.test(text)
+          && rect.left > width * 0.25
+          && rect.width < width * 0.75;
+      })
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return leftRect.top - rightRect.top || leftRect.left - rightRect.left;
+      });
+    for (const node of titleCandidates) {
+      const label = extractDayDateLabel(node);
+      if (label) {
+        return label;
+      }
+    }
     for (const node of nodes) {
       const text = compactText(node);
       if (text.length <= 80 && /学习任务|课程安排|任务/.test(text)) {
@@ -2176,7 +2263,12 @@
     }
     const selected = selectedDayIndex >= 0 ? selectedDayIndex : startIndex - 1;
     const next = Math.max(startIndex, selected + 1);
-    return next < days.length ? next : -1;
+    for (let index = next; index < days.length; index += 1) {
+      if (!isCompletedCourseDay(days[index])) {
+        return index;
+      }
+    }
+    return -1;
   }
 
   function findCourseButtonCandidates(includeFailed) {
@@ -2519,9 +2611,23 @@
 
   function courseSignature(element) {
     const rect = element.getBoundingClientRect();
+    const kind = courseActionKind(element);
+    const currentDate = currentTaskDateLabel();
+    const label = labelForCourseElement(element);
+    const containerText = compactText(courseContainer(element)).slice(0, 160);
+    if (kind === "oneClick") {
+      return [
+        currentDate,
+        kind,
+        label,
+        containerText
+      ].join("|");
+    }
     return [
-      labelForCourseElement(element),
-      compactText(courseContainer(element)).slice(0, 120),
+      currentDate,
+      kind,
+      label,
+      containerText,
       Math.round(rect.top / 8),
       Math.round(rect.left / 8)
     ].join("|");

@@ -358,6 +358,11 @@ private fun BrowserScreen(controller: AutoEwtUiController) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val wide = maxWidth >= 600.dp
         val availableHeight = maxHeight
+        val compactBrowserHeight = when {
+            availableHeight < 560.dp -> 220.dp
+            availableHeight < 720.dp -> 260.dp
+            else -> 320.dp
+        }.coerceAtMost(availableHeight * 0.45f)
         val state = controller.state
         Box(modifier = Modifier.fillMaxSize()) {
             if (wide) {
@@ -397,20 +402,10 @@ private fun BrowserScreen(controller: AutoEwtUiController) {
                     BrowserControlColumn(
                         controller = controller,
                         compact = true,
-                        modifier = if (state.browserVisible) {
-                            Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = availableHeight * (if (state.automationRunning) 0.64f else 0.58f))
-                        } else {
-                            Modifier.fillMaxSize()
-                        }
+                        inlineBrowser = true,
+                        browserHeight = compactBrowserHeight,
+                        modifier = Modifier.fillMaxSize()
                     )
-                    if (state.browserVisible) {
-                        BrowserWorkspace(
-                            controller = controller,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
                 }
             }
             if (!state.browserVisible) {
@@ -428,7 +423,9 @@ private fun BrowserScreen(controller: AutoEwtUiController) {
 private fun BrowserControlColumn(
     controller: AutoEwtUiController,
     modifier: Modifier = Modifier,
-    compact: Boolean = false
+    compact: Boolean = false,
+    inlineBrowser: Boolean = false,
+    browserHeight: Dp = 280.dp
 ) {
     val state = controller.state
     var addressExpanded by remember { mutableStateOf(false) }
@@ -477,6 +474,15 @@ private fun BrowserControlColumn(
             }
         } else {
             BrowserViewAndLogChips(controller, state)
+        }
+
+        if (inlineBrowser && state.browserVisible) {
+            BrowserWorkspace(
+                controller = controller,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(browserHeight)
+            )
         }
 
         RunStatusPanel(state)
