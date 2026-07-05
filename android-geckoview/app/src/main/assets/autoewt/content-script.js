@@ -19,10 +19,12 @@
   const STUCK_RESTART_AFTER = 3;
   const URL_DISCOVERY_RETRY_DELAY = 2500;
   const EXACT_STUDY_PROGRESS_RE = /^学\s*\d+(?:\.\d+)?\s*[%％]$/;
+  const COMPLETED_STUDY_PROGRESS_RE = /学\s*100(?:\.0+)?\s*[%％]/;
   const WATCH_PROGRESS_RE = /已看\s*\d+(?:\.\d+)?\s*[%％]/;
   const DISCOVERY_FILTERS = ["进行中", "未开始", "已截止"];
   const DISCOVERY_TASK_ACTION_RE = /查看详情|去完成|继续完成|去学习|开始学习|继续学习/;
   const missedCheckpointReplayElements = new WeakSet();
+  const progressCourseElements = new WeakSet();
 
   let port = null;
   let config = {};
@@ -1646,8 +1648,9 @@
       "//*[normalize-space(.)='去收听' or normalize-space(.)='去查看' or normalize-space(.)='去学习' or normalize-space(.)='开始学习' or normalize-space(.)='继续学习' or normalize-space(.)='播放']"
     ).filter(visible).map(actionableElement).filter(isActionLikeElement);
     const missedReplayButtons = findMissedCheckpointReplayButtons();
+    const progressCourseButtons = findStudyProgressCourseButtons();
     const fallbackButtons = findFallbackCourseButtons();
-    const elements = uniqueElements(missedReplayButtons.concat(legacyLessonButtons, legacyOneClickButtons, lessonButtons, oneClickButtons, fallbackButtons).map(actionableElement));
+    const elements = uniqueElements(missedReplayButtons.concat(legacyLessonButtons, legacyOneClickButtons, lessonButtons, oneClickButtons, progressCourseButtons, fallbackButtons).map(actionableElement));
     const seenSignatures = new Set();
     return elements
       .filter((element) => visible(element))
@@ -1699,6 +1702,66 @@
       })
       .sort((left, right) => elementArea(left) - elementArea(right));
     return exact.concat(broad).map(actionableElement).filter(isActionLikeElement);
+  }
+
+  function findStudyProgressCourseButtons() {
+    const progressNodes = Array.from(document.querySelectorAll("body *"))
+      .filter((element) => {
+        const text = compactText(element);
+        if (!visible(element) || text.length < 2 || text.length > 180) {
+          return false;
+        }
+        if (!STUDY_PROGRESS_RE.test(text) || COMPLETED_STUDY_PROGRESS_RE.test(text) || DONE_RE.test(text)) {
+          return false;
+        }
+        return true;
+      })
+      .sort((left, right) => elementArea(left) - elementArea(right));
+    const actions = [];
+    for (const progress of progressNodes) {
+      const action = studyProgressActionElement(progress);
+      if (!action) {
+        continue;
+      }
+      progressCourseElements.add(action);
+      actions.push(action);
+    }
+    return uniqueElements(actions);
+  }
+
+  function studyProgressActionElement(progressElement) {
+    const container = courseContainer(progressElement);
+    const action = Array.from(container.querySelectorAll("button, a, [role='button'], div[class*='btn'], span[class*='btn'], [class*='study'], [class*='learn']"))
+      .filter((element) => {
+        const text = compactText(element);
+        return visible(element)
+          && text.length <= 120
+          && !DONE_RE.test(text)
+          && !COMPLETED_STUDY_PROGRESS_RE.test(text)
+          && (COURSE_ACTION_RE.test(text) || /学习|播放|查看/.test(text));
+      })
+      .map(actionableElement)
+      .filter(isActionLikeElement)
+      .sort((left, right) => elementArea(left) - elementArea(right))[0];
+    if (action) {
+      return action;
+    }
+    if (isActionLikeElement(container)) {
+      return container;
+    }
+    const bubblingTarget = clickableAncestor(progressElement, 8);
+    return bubblingTarget || progressElement;
+  }
+
+  function clickableAncestor(element, maxDepth) {
+    let current = element;
+    for (let depth = 0; current && current !== document.body && depth < maxDepth; depth += 1) {
+      if (isActionLikeElement(current)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
   }
 
   function findMissedCheckpointReplayButtons() {
@@ -1793,6 +1856,9 @@
   function isActionLikeElement(element) {
     if (!element) {
       return false;
+    }
+    if (progressCourseElements.has(element)) {
+      return true;
     }
     const style = window.getComputedStyle(element);
     const className = String(element.className || "");

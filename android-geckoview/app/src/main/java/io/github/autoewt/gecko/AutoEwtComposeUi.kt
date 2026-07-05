@@ -3,6 +3,12 @@ package io.github.autoewt.gecko
 import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,6 +18,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -36,12 +43,17 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Surface
@@ -49,6 +61,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -67,6 +80,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.launch
@@ -81,6 +95,29 @@ data class AutoEwtListUrlCandidate(
     val deadline: String,
     val teacher: String
 )
+
+private data class ControlButtonSpec(
+    val icon: Int,
+    val text: String,
+    val enabled: Boolean = true,
+    val primary: Boolean = false,
+    val destructive: Boolean = false,
+    val selected: Boolean = false,
+    val onClick: () -> Unit
+)
+
+private data class HelpIconSpec(
+    val icon: Int,
+    val title: String,
+    val body: String
+)
+
+private val DashboardButtonHeight = 36.dp
+private val DashboardIconButtonSize = 32.dp
+private val DashboardButtonShape = RoundedCornerShape(8.dp)
+private val DashboardButtonPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+private val DashboardButtonGap = 4.dp
+private val DashboardButtonMinWidth = 88.dp
 
 class AutoEwtUiState {
     companion object {
@@ -207,13 +244,14 @@ private fun AutoEwtTheme(content: @Composable () -> Unit) {
 @Composable
 private fun AutoEwtApp(controller: AutoEwtUiController) {
     val state = controller.state
+    var helpVisible by remember { mutableStateOf(false) }
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize()) {
-                AppHeader(controller)
+                AppHeader(controller, onHelpClick = { helpVisible = true })
                 PrimaryTabRow(selectedTabIndex = state.page) {
                     Tab(
                         selected = state.page == AutoEwtUiState.PAGE_BROWSER,
@@ -234,12 +272,15 @@ private fun AutoEwtApp(controller: AutoEwtUiController) {
             if (state.listUrlChoiceVisible) {
                 ListUrlCandidateDialog(controller)
             }
+            if (helpVisible) {
+                IconHelpDialog(onDismiss = { helpVisible = false })
+            }
         }
     }
 }
 
 @Composable
-private fun AppHeader(controller: AutoEwtUiController) {
+private fun AppHeader(controller: AutoEwtUiController, onHelpClick: () -> Unit) {
     val state = controller.state
     val subtitle = when {
         state.listUrlDiscoveryRunning -> "正在获取课程列表 URL"
@@ -275,6 +316,9 @@ private fun AppHeader(controller: AutoEwtUiController) {
             style = MaterialTheme.typography.labelLarge,
             color = if (state.automationRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
         )
+        IconButton(onClick = onHelpClick) {
+            ActionIcon(R.drawable.ic_help, contentDescription = "帮助", size = 20.dp)
+        }
     }
 }
 
@@ -285,41 +329,64 @@ private fun BrowserScreen(controller: AutoEwtUiController) {
         val wide = maxWidth >= 600.dp
         val availableHeight = maxHeight
         val state = controller.state
-        if (wide) {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                BrowserControlColumn(
-                    controller = controller,
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (wide) {
+                if (state.browserVisible) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        BrowserControlColumn(
+                            controller = controller,
+                            modifier = Modifier
+                                .widthIn(min = 320.dp, max = 420.dp)
+                                .fillMaxHeight()
+                        )
+                        BrowserWorkspace(
+                            controller = controller,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                } else {
+                    BrowserControlColumn(
+                        controller = controller,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp)
+                    )
+                }
+            } else {
+                Column(
                     modifier = Modifier
-                        .widthIn(min = 320.dp, max = 420.dp)
-                        .fillMaxHeight()
-                )
-                BrowserWorkspace(
-                    controller = controller,
-                    modifier = Modifier.weight(1f)
-                )
+                        .fillMaxSize()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    BrowserControlColumn(
+                        controller = controller,
+                        compact = true,
+                        modifier = if (state.browserVisible) {
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = availableHeight * (if (state.automationRunning) 0.64f else 0.58f))
+                        } else {
+                            Modifier.fillMaxSize()
+                        }
+                    )
+                    if (state.browserVisible) {
+                        BrowserWorkspace(
+                            controller = controller,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
             }
-        } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                BrowserControlColumn(
+            if (!state.browserVisible) {
+                HiddenBrowserHost(
                     controller = controller,
-                    compact = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = availableHeight * (if (state.automationRunning) 0.64f else 0.58f))
-                )
-                BrowserWorkspace(
-                    controller = controller,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.align(Alignment.BottomEnd)
                 )
             }
         }
@@ -334,7 +401,7 @@ private fun BrowserControlColumn(
     compact: Boolean = false
 ) {
     val state = controller.state
-    var addressExpanded by remember { mutableStateOf(!compact) }
+    var addressExpanded by remember { mutableStateOf(false) }
     val scrollModifier = if (compact) {
         Modifier.verticalScroll(rememberScrollState())
     } else {
@@ -348,31 +415,19 @@ private fun BrowserControlColumn(
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        val showAddressControls = !compact || addressExpanded || !state.automationRunning
-        if (!compact || addressExpanded) {
+        if (addressExpanded) {
             AddressBar(
                 controller = controller,
-                onCollapse = if (compact) {
-                    { addressExpanded = false }
-                } else {
-                    null
-                }
-            )
-        } else if (showAddressControls) {
-            CompactAddressRow(
-                url = state.url,
-                onExpand = { addressExpanded = true },
-                onOpen = { controller.openUrlFromUi(state.url) }
+                onCollapse = { addressExpanded = false }
             )
         }
 
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            BrowserActionButtons(controller, state)
-        }
+        BrowserActionButtons(
+            controller = controller,
+            state = state,
+            addressExpanded = addressExpanded,
+            onToggleAddress = { addressExpanded = !addressExpanded }
+        )
 
         if (compact) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -386,28 +441,11 @@ private fun BrowserControlColumn(
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (!showAddressControls) {
-                        TextButton(onClick = { addressExpanded = true }) {
-                            Text("地址")
-                        }
-                    }
                 }
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    BrowserViewAndLogChips(controller, state)
-                }
-            }
-        } else {
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
                 BrowserViewAndLogChips(controller, state)
             }
+        } else {
+            BrowserViewAndLogChips(controller, state)
         }
 
         RunStatusPanel(state)
@@ -429,65 +467,66 @@ private fun BrowserControlColumn(
 @Composable
 private fun AddressBar(controller: AutoEwtUiController, onCollapse: (() -> Unit)? = null) {
     val state = controller.state
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        OutlinedTextField(
-            value = state.url,
-            onValueChange = { state.url = it },
-            modifier = Modifier.weight(1f),
-            singleLine = true,
-            label = { Text("地址") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
-        )
-        Button(
-            onClick = { controller.openUrlFromUi(state.url) },
-            modifier = Modifier.height(56.dp),
-            contentPadding = ButtonDefaults.ButtonWithIconContentPadding
-        ) {
-            ActionIcon(R.drawable.ic_open)
-            Spacer(Modifier.width(6.dp))
-            Text("打开")
-        }
-        if (onCollapse != null) {
-            TextButton(onClick = onCollapse) {
-                Text("收起")
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val useStackedControls = maxWidth < 360.dp && onCollapse != null
+        if (useStackedControls) {
+            Column(verticalArrangement = Arrangement.spacedBy(DashboardButtonGap)) {
+                OutlinedTextField(
+                    value = state.url,
+                    onValueChange = { state.url = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("地址") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(DashboardButtonGap)
+                ) {
+                    ActionButton(
+                        icon = R.drawable.ic_open,
+                        text = "打开",
+                        onClick = { controller.openUrlFromUi(state.url) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    ActionButton(
+                        icon = R.drawable.ic_arrow_up,
+                        text = "收起",
+                        onClick = onCollapse,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
-        }
-    }
-}
-
-@Composable
-private fun CompactAddressRow(url: String, onExpand: () -> Unit, onOpen: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Text(
-            text = url.ifBlank { "未设置地址" },
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        TextButton(onClick = onExpand) {
-            Text("地址")
-        }
-        OutlinedButton(
-            onClick = onOpen,
-            contentPadding = ButtonDefaults.ButtonWithIconContentPadding
-        ) {
-            ActionIcon(R.drawable.ic_open)
-            Spacer(Modifier.width(6.dp))
-            Text("打开")
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(DashboardButtonGap)
+            ) {
+                OutlinedTextField(
+                    value = state.url,
+                    onValueChange = { state.url = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    label = { Text("地址") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                )
+                ActionButton(
+                    icon = R.drawable.ic_open,
+                    text = "打开",
+                    onClick = { controller.openUrlFromUi(state.url) },
+                    modifier = Modifier.widthIn(min = 72.dp)
+                )
+                if (onCollapse != null) {
+                    ActionButton(
+                        icon = R.drawable.ic_arrow_up,
+                        text = "收起",
+                        onClick = onCollapse,
+                        modifier = Modifier.widthIn(min = 72.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -605,52 +644,143 @@ private fun UnifiedProgressBar(progress: Float, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun BrowserActionButtons(controller: AutoEwtUiController, state: AutoEwtUiState) {
-    if (!state.automationRunning) {
-        ActionButton(R.drawable.ic_course, "打开课程", onClick = controller::openConfiguredCourseFromUi)
-    }
-    ActionButton(
-        icon = if (state.automationRunning) R.drawable.ic_stop else R.drawable.ic_play,
-        text = if (state.automationRunning) "停止" else "开始刷课",
-        primary = !state.automationRunning,
-        destructive = state.automationRunning,
-        onClick = if (state.automationRunning) controller::stopAutomationFromUi else controller::startAutomationFromUi
+private fun BrowserActionButtons(
+    controller: AutoEwtUiController,
+    state: AutoEwtUiState,
+    addressExpanded: Boolean,
+    onToggleAddress: () -> Unit
+) {
+    val actions = mutableListOf<ControlButtonSpec>()
+    actions.add(
+        ControlButtonSpec(
+            icon = R.drawable.ic_link,
+            text = "地址",
+            selected = addressExpanded,
+            onClick = onToggleAddress
+        )
     )
-    ActionButton(R.drawable.ic_restart, "重启", onClick = controller::restartSessionFromUi)
     if (!state.automationRunning) {
-        ActionButton(R.drawable.ic_login, "填登录", onClick = controller::requestFillLoginFromUi)
-        ActionButton(R.drawable.ic_probe, "探测", onClick = controller::requestProbeFromUi)
+        actions.add(ControlButtonSpec(R.drawable.ic_course, "打开课程", onClick = controller::openConfiguredCourseFromUi))
+    }
+    actions.add(
+        ControlButtonSpec(
+            icon = if (state.automationRunning) R.drawable.ic_stop else R.drawable.ic_play,
+            text = if (state.automationRunning) "停止" else "开始刷课",
+            primary = !state.automationRunning,
+            destructive = state.automationRunning,
+            onClick = if (state.automationRunning) controller::stopAutomationFromUi else controller::startAutomationFromUi
+        )
+    )
+    actions.add(ControlButtonSpec(R.drawable.ic_restart, "重启", onClick = controller::restartSessionFromUi))
+    if (!state.automationRunning) {
+        actions.add(ControlButtonSpec(R.drawable.ic_login, "填登录", onClick = controller::requestFillLoginFromUi))
+        actions.add(ControlButtonSpec(R.drawable.ic_probe, "探测", onClick = controller::requestProbeFromUi))
+    }
+    ControlButtonGrid(actions = actions, minCellWidth = DashboardButtonMinWidth)
+}
+
+@Composable
+private fun BrowserViewAndLogChips(controller: AutoEwtUiController, state: AutoEwtUiState) {
+    ControlButtonGrid(
+        actions = listOf(
+            ControlButtonSpec(
+                icon = R.drawable.ic_open,
+                text = "浏览器",
+                selected = state.browserVisible,
+                onClick = { controller.setBrowserVisibleFromUi(!state.browserVisible) }
+            ),
+            ControlButtonSpec(
+                icon = R.drawable.ic_log_full,
+                text = "完整",
+                selected = state.logMode == AutoEwtUiState.LOG_MODE_FULL,
+                onClick = { setLogMode(controller, AutoEwtUiState.LOG_MODE_FULL) }
+            ),
+            ControlButtonSpec(
+                icon = R.drawable.ic_log_single,
+                text = "单行",
+                selected = state.logMode == AutoEwtUiState.LOG_MODE_SINGLE,
+                onClick = { setLogMode(controller, AutoEwtUiState.LOG_MODE_SINGLE) }
+            ),
+            ControlButtonSpec(
+                icon = R.drawable.ic_log_hidden,
+                text = "隐藏",
+                selected = state.logMode == AutoEwtUiState.LOG_MODE_HIDDEN,
+                onClick = { setLogMode(controller, AutoEwtUiState.LOG_MODE_HIDDEN) }
+            )
+        ),
+        minCellWidth = DashboardButtonMinWidth
+    )
+}
+
+@Composable
+private fun ControlButtonGrid(actions: List<ControlButtonSpec>, minCellWidth: Dp) {
+    if (actions.isEmpty()) {
+        return
+    }
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val iconToolbarWidth = actions.size * DashboardIconButtonSize.value
+        val useIconToolbar = maxWidth < 300.dp && iconToolbarWidth <= maxWidth.value
+        if (useIconToolbar) {
+            ControlIconToolbar(actions)
+            return@BoxWithConstraints
+        }
+        val columns = responsiveColumnCount(actions.size, maxWidth, minCellWidth)
+        Column(verticalArrangement = Arrangement.spacedBy(DashboardButtonGap)) {
+            actions.chunked(columns).forEach { rowActions ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(DashboardButtonGap)
+                ) {
+                    rowActions.forEach { action ->
+                        ActionButton(
+                            icon = action.icon,
+                            text = action.text,
+                            enabled = action.enabled,
+                            primary = action.primary,
+                            destructive = action.destructive,
+                            selected = action.selected,
+                            onClick = action.onClick,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    repeat(columns - rowActions.size) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun BrowserViewAndLogChips(controller: AutoEwtUiController, state: AutoEwtUiState) {
-    FilterChip(
-        selected = state.browserVisible,
-        onClick = { controller.setBrowserVisibleFromUi(!state.browserVisible) },
-        label = { Text(if (state.browserVisible) "浏览器显示" else "浏览器隐藏") },
-        leadingIcon = { ActionIcon(R.drawable.ic_open) },
-        colors = controlChipColors()
-    )
-    LogModeChip(
-        label = "完整",
-        icon = R.drawable.ic_log_full,
-        selected = state.logMode == AutoEwtUiState.LOG_MODE_FULL,
-        onClick = { setLogMode(controller, AutoEwtUiState.LOG_MODE_FULL) }
-    )
-    LogModeChip(
-        label = "单行",
-        icon = R.drawable.ic_log_single,
-        selected = state.logMode == AutoEwtUiState.LOG_MODE_SINGLE,
-        onClick = { setLogMode(controller, AutoEwtUiState.LOG_MODE_SINGLE) }
-    )
-    LogModeChip(
-        label = "隐藏",
-        icon = R.drawable.ic_log_hidden,
-        selected = state.logMode == AutoEwtUiState.LOG_MODE_HIDDEN,
-        onClick = { setLogMode(controller, AutoEwtUiState.LOG_MODE_HIDDEN) }
-    )
+private fun ControlIconToolbar(actions: List<ControlButtonSpec>) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        actions.forEach { action ->
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                IconActionButton(action)
+            }
+        }
+    }
+}
+
+private fun responsiveColumnCount(itemCount: Int, maxWidth: Dp, minCellWidth: Dp): Int {
+    if (itemCount <= 1) {
+        return 1
+    }
+    val fitCount = ((maxWidth.value + DashboardButtonGap.value) / (minCellWidth.value + DashboardButtonGap.value))
+        .toInt()
+        .coerceIn(1, itemCount)
+    if (itemCount == 4 && fitCount == 3) {
+        return 2
+    }
+    return fitCount
 }
 
 @Composable
@@ -675,17 +805,19 @@ private fun BrowserWorkspace(controller: AutoEwtUiController, modifier: Modifier
                 }
             }
         } else {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "浏览器已隐藏",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            HiddenBrowserHost(controller)
         }
+    }
+}
+
+@Composable
+private fun HiddenBrowserHost(controller: AutoEwtUiController, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .size(1.dp)
+            .clip(RoundedCornerShape(1.dp))
+    ) {
+        BrowserView(controller, Modifier.size(1.dp))
     }
 }
 
@@ -766,7 +898,7 @@ private fun LogPanel(state: AutoEwtUiState, modifier: Modifier = Modifier) {
                     modifier = Modifier
                         .fillMaxSize()
                         .verticalScroll(scroll)
-                        .padding(start = 10.dp, top = 10.dp, end = 10.dp, bottom = 48.dp)
+                        .padding(start = 10.dp, top = 10.dp, end = 10.dp, bottom = 62.dp)
                 ) {
                     Text(
                         text = state.fullLog.ifBlank { "暂无日志" },
@@ -774,27 +906,36 @@ private fun LogPanel(state: AutoEwtUiState, modifier: Modifier = Modifier) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (!atBottom) {
-                    IconButton(
-                        onClick = {
-                            followTail = true
-                            scope.launch {
-                                scroll.animateScrollTo(scroll.maxValue)
-                            }
-                        },
-                        modifier = Modifier
-                            .size(44.dp)
-                            .align(Alignment.BottomEnd)
-                            .padding(6.dp)
-                            .clip(RoundedCornerShape(22.dp))
-                            .background(MaterialTheme.colorScheme.surface)
+                AnimatedVisibility(
+                    visible = !atBottom,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(horizontal = 6.dp, vertical = 6.dp),
+                    enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
+                    exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 })
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(22.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        contentColor = MaterialTheme.colorScheme.primary,
+                        tonalElevation = 3.dp,
+                        shadowElevation = 2.dp
                     ) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_arrow_down),
-                            contentDescription = "跳到最新日志",
-                            modifier = Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
+                        IconButton(
+                            onClick = {
+                                followTail = true
+                                scope.launch {
+                                    scroll.animateScrollTo(scroll.maxValue)
+                                }
+                            },
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_arrow_down),
+                                contentDescription = "跳到最新日志",
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -862,6 +1003,125 @@ private fun ListUrlCandidateDialog(controller: AutoEwtUiController) {
             }
         }
     )
+}
+
+@Composable
+private fun IconHelpDialog(onDismiss: () -> Unit) {
+    val mainActions = listOf(
+        HelpIconSpec(R.drawable.ic_link, "地址", "展开课程列表 URL 输入框；日常运行时默认隐藏，减少浏览器页占用。"),
+        HelpIconSpec(R.drawable.ic_course, "打开课程", "按配置里的课程列表 URL 进入任务页。已完成任务会自动隐藏，已截止但未完成的任务仍可进入。"),
+        HelpIconSpec(R.drawable.ic_play, "开始刷课", "按配置页的模式运行：刷课会处理视频、FM 与检查点；做题会按 report_id/任务入口执行。"),
+        HelpIconSpec(R.drawable.ic_stop, "停止", "停止当前自动化任务；正常停止不会触发崩溃重启。"),
+        HelpIconSpec(R.drawable.ic_restart, "重启", "重建 GeckoView 浏览器会话。视频卡死、页面不再播放或兼容异常时可以使用。"),
+        HelpIconSpec(R.drawable.ic_login, "填登录", "把配置页账号密码填入页面。验证码、短信验证仍需要手动完成。"),
+        HelpIconSpec(R.drawable.ic_probe, "探测", "手动探测当前页面课程/日期/按钮状态；自动探测会按间隔重试，手动探测才输出页面摘要。")
+    )
+    val viewActions = listOf(
+        HelpIconSpec(R.drawable.ic_open, "浏览器", "显示或隐藏内嵌浏览器。隐藏时浏览器仍挂载运行，进度和自动化不会暂停。"),
+        HelpIconSpec(R.drawable.ic_log_full, "完整日志", "显示完整运行日志；向下箭头只在未滑到底部时出现。"),
+        HelpIconSpec(R.drawable.ic_log_single, "单行日志", "只保留最新一行，适合窄屏观察进度。"),
+        HelpIconSpec(R.drawable.ic_log_hidden, "隐藏日志", "完全收起日志，把空间留给浏览器和进度。")
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(8.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = {
+            Text(
+                text = "使用帮助",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        },
+        text = {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                item {
+                    HelpSectionTitle("基本流程")
+                    HelpParagraph("先到配置页填写账号、密码和课程列表 URL；也可以使用“自动获取课程列表 URL”登录后选择具体任务。")
+                    HelpParagraph("高级设置里可切换刷课/做题、起始天数、自动登录、桌面浏览器模式等。默认桌面浏览器模式更接近电脑端页面。")
+                }
+                item {
+                    HelpSectionTitle("浏览器页图标")
+                }
+                items(mainActions, key = { it.title }) { item ->
+                    HelpIconRow(item)
+                }
+                item {
+                    HelpSectionTitle("视图与日志")
+                }
+                items(viewActions, key = { it.title }) { item ->
+                    HelpIconRow(item)
+                }
+                item {
+                    HelpSectionTitle("自动化边界")
+                    HelpParagraph("Android 版内置 GeckoView，不需要安装浏览器驱动；当前主线最低支持 Android 8.0。")
+                    HelpParagraph("软件会实时处理视频检查点、暂停提示和“错过所有看课检测点”的重刷入口，但不会绕过验证码或短信验证。")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("知道了")
+            }
+        }
+    )
+}
+
+@Composable
+private fun HelpSectionTitle(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurface
+    )
+}
+
+@Composable
+private fun HelpParagraph(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+@Composable
+private fun HelpIconRow(item: HelpIconSpec) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Surface(
+            modifier = Modifier.size(32.dp),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.primary
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                ActionIcon(item.icon, contentDescription = item.title, size = 17.dp)
+            }
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = item.body,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
 }
 
 @Composable
@@ -1163,79 +1423,134 @@ private fun ActionButton(
     enabled: Boolean = true,
     primary: Boolean = false,
     destructive: Boolean = false,
+    selected: Boolean = false,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    val colors = when {
-        destructive -> ButtonDefaults.outlinedButtonColors(
-            contentColor = MaterialTheme.colorScheme.error
-        )
-        primary -> ButtonDefaults.buttonColors()
-        else -> ButtonDefaults.outlinedButtonColors(
-            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-    val content: @Composable () -> Unit = {
-        ActionIcon(icon)
-        Spacer(Modifier.width(6.dp))
-        Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-    if (destructive) {
-        OutlinedButton(
-            onClick = onClick,
-            enabled = enabled,
-            contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
-            colors = colors,
-            modifier = Modifier.widthIn(min = 104.dp)
-        ) {
-            content()
+    Surface(
+        modifier = modifier.height(DashboardButtonHeight),
+        shape = DashboardButtonShape,
+        color = Color.Transparent
+    ) {
+        val content: @Composable () -> Unit = {
+            ActionIcon(icon)
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
-    } else if (primary) {
-        Button(
-            onClick = onClick,
-            enabled = enabled,
-            contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
-            modifier = Modifier.widthIn(min = 112.dp)
-        ) {
-            content()
-        }
-    } else {
-        OutlinedButton(
-            onClick = onClick,
-            enabled = enabled,
-            contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
-            colors = colors,
-            modifier = Modifier.widthIn(min = 104.dp)
-        ) {
-            content()
+        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+            when {
+                destructive -> OutlinedButton(
+                    onClick = onClick,
+                    enabled = enabled,
+                    contentPadding = DashboardButtonPadding,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                    shape = DashboardButtonShape,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    content()
+                }
+                primary -> Button(
+                    onClick = onClick,
+                    enabled = enabled,
+                    contentPadding = DashboardButtonPadding,
+                    shape = DashboardButtonShape,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    content()
+                }
+                selected -> FilledTonalButton(
+                    onClick = onClick,
+                    enabled = enabled,
+                    contentPadding = DashboardButtonPadding,
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                        contentColor = MaterialTheme.colorScheme.primary
+                    ),
+                    shape = DashboardButtonShape,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    content()
+                }
+                else -> OutlinedButton(
+                    onClick = onClick,
+                    enabled = enabled,
+                    contentPadding = DashboardButtonPadding,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    shape = DashboardButtonShape,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    content()
+                }
+            }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LogModeChip(label: String, icon: Int, selected: Boolean, onClick: () -> Unit) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = { Text(label) },
-        leadingIcon = { ActionIcon(icon) },
-        colors = controlChipColors()
-    )
+private fun IconActionButton(action: ControlButtonSpec, modifier: Modifier = Modifier) {
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+        when {
+            action.destructive -> OutlinedIconButton(
+                onClick = action.onClick,
+                enabled = action.enabled,
+                colors = IconButtonDefaults.outlinedIconButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                modifier = modifier.size(DashboardIconButtonSize)
+            ) {
+                ActionIcon(action.icon, contentDescription = action.text, size = 17.dp)
+            }
+            action.primary -> FilledIconButton(
+                onClick = action.onClick,
+                enabled = action.enabled,
+                modifier = modifier.size(DashboardIconButtonSize)
+            ) {
+                ActionIcon(action.icon, contentDescription = action.text, size = 17.dp)
+            }
+            action.selected -> FilledTonalIconButton(
+                onClick = action.onClick,
+                enabled = action.enabled,
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                    contentColor = MaterialTheme.colorScheme.primary
+                ),
+                modifier = modifier.size(DashboardIconButtonSize)
+            ) {
+                ActionIcon(action.icon, contentDescription = action.text, size = 17.dp)
+            }
+            else -> OutlinedIconButton(
+                onClick = action.onClick,
+                enabled = action.enabled,
+                colors = IconButtonDefaults.outlinedIconButtonColors(
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = modifier.size(DashboardIconButtonSize)
+            ) {
+                ActionIcon(action.icon, contentDescription = action.text, size = 17.dp)
+            }
+        }
+    }
 }
 
 @Composable
-private fun controlChipColors() = FilterChipDefaults.filterChipColors(
-    selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-    selectedLabelColor = MaterialTheme.colorScheme.onSurface,
-    selectedLeadingIconColor = MaterialTheme.colorScheme.primary
-)
-
-@Composable
-private fun ActionIcon(icon: Int) {
+private fun ActionIcon(icon: Int, contentDescription: String? = null, size: Dp = 16.dp) {
     Icon(
         painter = painterResource(icon),
-        contentDescription = null,
-        modifier = Modifier.size(18.dp)
+        contentDescription = contentDescription,
+        modifier = Modifier.size(size)
     )
 }
 
