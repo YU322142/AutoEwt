@@ -476,15 +476,6 @@ private fun BrowserControlColumn(
             BrowserViewAndLogChips(controller, state)
         }
 
-        if (inlineBrowser && state.browserVisible) {
-            BrowserWorkspace(
-                controller = controller,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(browserHeight)
-            )
-        }
-
         RunStatusPanel(state)
 
         if (compact) {
@@ -496,6 +487,16 @@ private fun BrowserControlColumn(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f, fill = false)
+            )
+        }
+
+        if (inlineBrowser && state.browserVisible) {
+            BrowserWorkspace(
+                controller = controller,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(browserHeight),
+                contentPadding = 0.dp
             )
         }
     }
@@ -860,13 +861,17 @@ private fun responsiveColumnCount(itemCount: Int, maxWidth: Dp, minCellWidth: Dp
 }
 
 @Composable
-private fun BrowserWorkspace(controller: AutoEwtUiController, modifier: Modifier = Modifier) {
+private fun BrowserWorkspace(
+    controller: AutoEwtUiController,
+    modifier: Modifier = Modifier,
+    contentPadding: Dp = 8.dp
+) {
     val state = controller.state
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surface)
-            .padding(8.dp)
+            .padding(contentPadding)
     ) {
         if (state.browserVisible) {
             Box(modifier = Modifier.fillMaxSize()) {
