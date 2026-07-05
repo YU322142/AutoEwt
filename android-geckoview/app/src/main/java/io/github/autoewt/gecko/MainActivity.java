@@ -99,12 +99,14 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private String childTaskKind = "";
     private String pendingListUrlTitle = "";
     private boolean listUrlDiscoveryRunning = false;
+    private boolean listUrlCandidateSelectionPending = false;
     private WebExtension.Port activePort;
     private WebExtension bridgeExtension;
     private final ArrayDeque<GeckoSession> parentSessions = new ArrayDeque<>();
     private final ArrayList<WebExtension.Port> connectedPorts = new ArrayList<>();
     private final StringBuilder logBuffer = new StringBuilder();
     private long lastAutomationRestartAt = 0L;
+    private boolean returnToOobeAfterListUrlDiscovery = false;
     private static final int LOG_MODE_FULL = 0;
     private static final int LOG_MODE_SINGLE = 1;
     private static final int LOG_MODE_HIDDEN = 2;
@@ -599,6 +601,23 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         if (uiState != null) {
             uiState.setBrowserVisible(visible);
         }
+        refreshGeckoViewAfterVisibilityChange();
+    }
+
+    private void refreshGeckoViewAfterVisibilityChange() {
+        if (geckoView == null) {
+            return;
+        }
+        geckoView.postDelayed(this::refreshGeckoViewSurface, 80);
+        geckoView.postDelayed(this::refreshGeckoViewSurface, 260);
+    }
+
+    private void refreshGeckoViewSurface() {
+        if (geckoView == null) {
+            return;
+        }
+        geckoView.requestLayout();
+        geckoView.invalidate();
     }
 
     @Override
@@ -625,9 +644,16 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         if (!validateCredentialsForDiscovery()) {
             return;
         }
-        leaveOobeForBrowserIfNeeded();
-        showBrowserPage();
-        setBrowserVisibleFromUi(true);
+        showBrowserForListUrlDiscovery();
+        listUrlDiscoveryRunning = true;
+        listUrlCandidateSelectionPending = false;
+        pendingListUrlTitle = "";
+        setListUrlManualEntryVisible(false);
+        setListUrlDiscoveryUi(true, "正在准备获取任务");
+        if (!returnToOobeAfterListUrlDiscovery) {
+            showBrowserPage();
+            setBrowserVisibleFromUi(true);
+        }
         if (geckoView != null) {
             geckoView.postDelayed(this::startListUrlDiscovery, 150);
         } else {
@@ -689,6 +715,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
 
     @Override
     public void dismissOobeFromUi() {
+        returnToOobeAfterListUrlDiscovery = false;
         prefs.edit().putBoolean(KEY_OOBE_DONE, true).apply();
         if (uiState != null) {
             uiState.setOobeVisible(false);
@@ -702,16 +729,68 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     }
 
     @Override
+    public void resetAppToOobeFromUi() {
+        sendAutomationCommand("stop");
+        sendStopListUrlDiscoveryCommand();
+        closeAllChildSessions("reset");
+        releaseAutomationWakeLock();
+        stopBackgroundService();
+
+        returnToOobeAfterListUrlDiscovery = false;
+        listUrlDiscoveryRunning = false;
+        listUrlCandidateSelectionPending = false;
+        pendingListUrlTitle = "";
+        pendingChildTaskKind = "";
+        childTaskKind = "";
+        lastAutomationRestartAt = 0L;
+        logMode = LOG_MODE_SINGLE;
+        lastUrl = DEFAULT_URL;
+        logBuffer.setLength(0);
+
+        prefs.edit().clear().putBoolean(KEY_OOBE_DONE, false).apply();
+        loadConfigIntoForm();
+        if (uiState != null) {
+            uiState.setPage(AutoEwtUiState.PAGE_BROWSER);
+            uiState.setBrowserVisible(true);
+            uiState.setOobeStep(0);
+            uiState.setOobeVisible(true);
+            uiState.setLogMode(LOG_MODE_SINGLE);
+            uiState.setFullLog("");
+            uiState.setSingleLogLine("");
+            uiState.clearAutomationProgress();
+            uiState.updateListUrlDiscovery(false, "");
+            uiState.setListUrlManualEntryVisible(false);
+            uiState.setStatus("已回到初始化向导");
+        }
+        setUrlText(DEFAULT_URL);
+        updateAutomationButtons();
+        syncBackgroundKeepAlive();
+        load(DEFAULT_URL);
+        log("已重新初始化软件并回到 OOBE");
+    }
+
+    @Override
     public void requestNotificationPermissionFromUi() {
         requestPostNotificationsIfNeeded(true);
         updateNotificationPermissionState();
     }
 
-    private void leaveOobeForBrowserIfNeeded() {
-        if (uiState != null && uiState.getOobeVisible()) {
-            prefs.edit().putBoolean(KEY_OOBE_DONE, true).apply();
-            uiState.setOobeVisible(false);
+    private void showBrowserForListUrlDiscovery() {
+        returnToOobeAfterListUrlDiscovery = uiState != null && uiState.getOobeVisible();
+        if (returnToOobeAfterListUrlDiscovery && uiState != null) {
+            uiState.setOobeStep(2);
         }
+    }
+
+    private void restoreOobeAfterListUrlDiscoveryIfNeeded(boolean success) {
+        if (!returnToOobeAfterListUrlDiscovery || uiState == null || prefs.getBoolean(KEY_OOBE_DONE, false)) {
+            returnToOobeAfterListUrlDiscovery = false;
+            return;
+        }
+        returnToOobeAfterListUrlDiscovery = false;
+        uiState.setOobeStep(success ? 3 : 2);
+        uiState.setOobeVisible(true);
+        uiState.setPage(AutoEwtUiState.PAGE_CONFIG);
     }
 
     private boolean validateCredentialsForDiscovery() {
@@ -953,6 +1032,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 uiState.setOobeStep(2);
             }
             log("请先填写账号和密码，再自动获取课程列表 URL");
+            restoreOobeAfterListUrlDiscoveryIfNeeded(false);
             showConfigPage();
             return;
         }
@@ -962,14 +1042,20 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 .putBoolean(KEY_AUTO_SUBMIT_LOGIN, true)
                 .apply();
         listUrlDiscoveryRunning = true;
+        listUrlCandidateSelectionPending = false;
         setListUrlManualEntryVisible(false);
         setListUrlDiscoveryUi(true, "正在打开任务页");
         pendingChildTaskKind = "";
         childTaskKind = "";
         updateAutomationButtons();
         closeAllChildSessions("discoverListUrl");
-        showBrowserPage();
-        setBrowserVisibleFromUi(true);
+        boolean keepInOobe = returnToOobeAfterListUrlDiscovery && uiState != null && uiState.getOobeVisible();
+        if (!keepInOobe) {
+            showBrowserPage();
+            setBrowserVisibleFromUi(true);
+        } else {
+            uiState.setOobeStep(2);
+        }
         log("开始自动获取课程列表 URL：将隐藏已完成任务，并扫描进行中、未开始、已截止任务");
         load(HOMEWORK_DISCOVERY_URL);
         if (geckoView != null) {
@@ -1018,6 +1104,10 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
 
     private void sendListUrlCandidateSelection(String candidateId, String title) {
         pendingListUrlTitle = title == null ? "" : title.trim();
+        listUrlCandidateSelectionPending = true;
+        if (uiState != null) {
+            uiState.clearListUrlCandidates();
+        }
         JSONObject message = new JSONObject();
         try {
             message.put("type", "selectListUrlCandidate");
@@ -1032,17 +1122,26 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
 
     private void cancelListUrlDiscovery(String reason) {
         listUrlDiscoveryRunning = false;
+        listUrlCandidateSelectionPending = false;
         sendStopListUrlDiscoveryCommand();
         setListUrlDiscoveryUi(false, "");
         log("URL 获取已取消：" + reason);
+        restoreOobeAfterListUrlDiscoveryIfNeeded(false);
     }
 
     private void showListUrlCandidateDialog(JSONArray candidates) {
+        if (listUrlCandidateSelectionPending) {
+            setListUrlDiscoveryUi(true, "正在打开所选任务：" + pendingListUrlTitle);
+            log("URL 获取：已选择任务，忽略重复候选列表");
+            return;
+        }
         if (candidates == null || candidates.length() == 0) {
             listUrlDiscoveryRunning = false;
+            listUrlCandidateSelectionPending = false;
             setListUrlDiscoveryUi(false, "");
             setListUrlManualEntryVisible(true);
             log("URL 获取失败：没有找到可选任务");
+            restoreOobeAfterListUrlDiscoveryIfNeeded(false);
             return;
         }
 
@@ -1076,9 +1175,11 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
 
         if (candidateItems.isEmpty()) {
             listUrlDiscoveryRunning = false;
+            listUrlCandidateSelectionPending = false;
             setListUrlDiscoveryUi(false, "");
             setListUrlManualEntryVisible(true);
             log("URL 获取失败：候选任务数据为空");
+            restoreOobeAfterListUrlDiscoveryIfNeeded(false);
             return;
         }
 
@@ -1094,6 +1195,21 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             return text;
         }
         return text.substring(0, Math.max(0, maxChars - 1)) + "…";
+    }
+
+    private String cleanLoginFailureMessage(String rawMessage) {
+        String message = rawMessage == null ? "" : rawMessage.trim().replaceAll("\\s+", " ");
+        if (message.contains("登录失败")
+                || message.contains("账号")
+                || message.contains("账户")
+                || message.contains("用户")
+                || message.contains("密码")) {
+            return "请检查账号密码后重试";
+        }
+        if (message.contains("验证码") || message.contains("短信")) {
+            return "验证码错误，请重新验证后重试";
+        }
+        return message.isEmpty() ? "请检查账号密码后重试" : message;
     }
 
     private void startAutomation() {
@@ -1376,14 +1492,17 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         String taskTitle = title == null || title.trim().isEmpty() ? pendingListUrlTitle : title.trim();
         if (!isDiscoveredListUrl(url)) {
             listUrlDiscoveryRunning = false;
+            listUrlCandidateSelectionPending = false;
             pendingListUrlTitle = "";
             setListUrlDiscoveryUi(false, "");
             setListUrlManualEntryVisible(true);
             sendStopListUrlDiscoveryCommand();
             log("URL 获取结果无效：" + rawUrl);
+            restoreOobeAfterListUrlDiscoveryIfNeeded(false);
             return;
         }
         listUrlDiscoveryRunning = false;
+        listUrlCandidateSelectionPending = false;
         setListUrlDiscoveryUi(false, "");
         setListUrlManualEntryVisible(false);
         pendingListUrlTitle = "";
@@ -1404,6 +1523,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         }
         sendConfigToPage(false);
         log("已保存课程列表 URL" + (taskTitle.isEmpty() ? "" : "：" + taskTitle));
+        restoreOobeAfterListUrlDiscoveryIfNeeded(true);
     }
 
     private boolean captureDiscoveredListUrlFromNavigation(String url) {
@@ -1757,13 +1877,16 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 if (!loginError.isEmpty()) {
                     prefs.edit().putBoolean(KEY_AUTOMATION_RUNNING, false).apply();
                     listUrlDiscoveryRunning = false;
-                    setListUrlDiscoveryUi(false, "登录失败：" + loginError + "。请检查账号密码后重试。");
+                    listUrlCandidateSelectionPending = false;
+                    String loginFailure = cleanLoginFailureMessage(loginError);
+                    setListUrlDiscoveryUi(false, loginFailure);
                     setListUrlManualEntryVisible(false);
                     if (uiState != null) {
                         uiState.setOobeStep(2);
-                        uiState.setStatus("登录失败：" + loginError);
+                        uiState.setStatus(loginFailure);
                     }
                     updateAutomationButtons();
+                    restoreOobeAfterListUrlDiscoveryIfNeeded(false);
                 }
             } else if ("automationLog".equals(type)) {
                 String messageText = json.optString("message", "");
@@ -1828,14 +1951,20 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 setListUrlDiscoveryUi(true, messageText);
                 log("URL 获取：" + messageText);
             } else if ("listUrlDiscoveryCandidates".equals(type)) {
+                if (listUrlCandidateSelectionPending) {
+                    setListUrlDiscoveryUi(true, "正在打开所选任务：" + pendingListUrlTitle);
+                    log("URL 获取：已选择任务，忽略重复候选列表");
+                    return;
+                }
                 setListUrlDiscoveryUi(true, "请选择要保存的任务");
                 log("URL 获取：请选择要保存的任务");
                 runOnUiThread(() -> showListUrlCandidateDialog(json.optJSONArray("candidates")));
             } else if ("listUrlDiscovered".equals(type)) {
                 saveDiscoveredListUrl(json.optString("url", ""), json.optString("title", ""));
             } else if ("listUrlDiscoveryFailed".equals(type)) {
-                String reason = json.optString("reason", "未找到可用任务");
+                String reason = cleanLoginFailureMessage(json.optString("reason", "未找到可用任务"));
                 listUrlDiscoveryRunning = false;
+                listUrlCandidateSelectionPending = false;
                 pendingListUrlTitle = "";
                 setListUrlDiscoveryUi(false, reason);
                 boolean allowManualFallback = !reason.contains("登录失败")
@@ -1847,6 +1976,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                     uiState.setOobeStep(2);
                 }
                 log("URL 获取失败：" + reason);
+                restoreOobeAfterListUrlDiscoveryIfNeeded(false);
             } else {
                 log("扩展消息：" + json);
             }
@@ -1945,7 +2075,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             }
         }
         if (!Double.isFinite(clientX) || !Double.isFinite(clientY) || viewportWidth <= 0 || viewportHeight <= 0) {
-            log("原生点击坐标无效：" + label);
+            log("原生点击坐标无效：" + label
+                    + " client=" + clientX + "," + clientY
+                    + " viewport=" + viewportWidth + "x" + viewportHeight);
             return;
         }
         boolean browserWasHidden = uiState != null && !uiState.getBrowserVisible();
@@ -1982,12 +2114,10 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 }
                 return;
             }
-            float rawX = (float) clientX;
-            float rawY = (float) clientY;
             float scaledX = (float) (clientX / viewportWidth * viewWidth);
             float scaledY = (float) (clientY / viewportHeight * viewHeight);
-            float x = clamp(rawX >= 0 && rawX <= viewWidth ? rawX : scaledX, 1, viewWidth - 1);
-            float y = clamp(rawY >= 0 && rawY <= viewHeight ? rawY : scaledY, 1, viewHeight - 1);
+            float x = clamp(scaledX, 1, viewWidth - 1);
+            float y = clamp(scaledY, 1, viewHeight - 1);
             dispatchTapToGeckoView(x, y, label);
         }, delayMs);
     }

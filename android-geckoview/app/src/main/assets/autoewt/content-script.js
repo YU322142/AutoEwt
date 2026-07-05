@@ -6,8 +6,8 @@
   const STEP_VIDEO = "video";
   const DONE_RE = /已学完|已完成|已结束|已提交|已批改/;
   const STUDY_PROGRESS_RE = /学\s*\d+(?:\.\d+)?\s*[%％]/;
-  const COURSE_ACTION_RE = /去学习|开始学习|继续学习|播放|去收听|去查看|学\s*\d+(?:\.\d+)?\s*[%％]/;
-  const EXACT_COURSE_ACTION_RE = /^(去学习|开始学习|继续学习|播放|去收听|去查看|学\s*\d+(?:\.\d+)?\s*[%％])$/;
+  const COURSE_ACTION_RE = /去学习|开始学习|继续学习|播放|去收听|去查看|^学$|学\s*\d+(?:\.\d+)?\s*[%％]/;
+  const EXACT_COURSE_ACTION_RE = /^(去学习|开始学习|继续学习|播放|去收听|去查看|学|学\s*\d+(?:\.\d+)?\s*[%％])$/;
   const CHECKPOINT_ACTION_RE = /我知道了|知道了|点击通过检查|通过检查|继续播放|继续学习|跳过|确定|确认/;
   const PYTHON_CHECKPOINT_ACTION_RE = /点击通过检查|跳过/;
   const PAUSED_CHECKPOINT_ACTION_RE = /我知道了|知道了|通过检查|继续播放|继续学习|确定|确认/;
@@ -18,9 +18,11 @@
   const DEFAULT_AUTOMATION_DELAY = 1500;
   const DAY_SWITCH_DELAY = 2500;
   const COURSE_PROBE_RETRY_DELAY = 10000;
+  const LESSON_OPEN_WAIT_MS = 20000;
   const STUCK_RESTART_AFTER = 3;
   const URL_DISCOVERY_RETRY_DELAY = 2500;
   const EXACT_STUDY_PROGRESS_RE = /^学\s*\d+(?:\.\d+)?\s*[%％]$/;
+  const EXACT_STUDY_BUTTON_RE = /^学$/;
   const COMPLETED_STUDY_PROGRESS_RE = /学\s*100(?:\.0+)?\s*[%％]/;
   const WATCH_PROGRESS_RE = /已看\s*\d+(?:\.\d+)?\s*[%％]/;
   const QUIZ_TASK_RE = /试卷|测一测|测验|考试|答题|继续答|去答题|去考试|去练习|试题|题目|\/\s*\d+\s*题|[0-9０-９]+\s*题/;
@@ -285,7 +287,7 @@
   }
 
   function notePossibleStuck(reason, details) {
-    if (!automationRunning || isLoginPage() || isVideoActivelyPlaying()) {
+    if (!automationRunning || isLoginPage() || isVideoActivelyPlaying() || isWaitingForLessonOpen()) {
       resetStuckWatchdog();
       return false;
     }
@@ -321,6 +323,13 @@
       url: location.href,
       timestamp: now
     });
+  }
+
+  function isWaitingForLessonOpen() {
+    return Boolean(lastLessonClickSignature)
+      && location.href === lastLessonClickUrl
+      && !document.querySelector("video")
+      && Date.now() - lastLessonClickAt <= LESSON_OPEN_WAIT_MS;
   }
 
   function videoProgress(video) {
@@ -455,7 +464,7 @@
         stopListUrlDiscovery();
         postMessage({
           type: "listUrlDiscoveryFailed",
-          reason: `登录失败：${result.loginError}。请检查账号密码后重新自动获取任务。`,
+          reason: result.loginError || "请检查账号密码后重试",
           timestamp: Date.now()
         });
         return;
@@ -978,15 +987,42 @@
   }
 
   function viewportWidth() {
-    return Number((window.visualViewport && window.visualViewport.width) || window.innerWidth || document.documentElement.clientWidth || 0);
+    return firstPositiveNumber(
+      window.visualViewport && window.visualViewport.width,
+      window.innerWidth,
+      document.documentElement && document.documentElement.clientWidth,
+      document.body && document.body.clientWidth,
+      window.screen && window.screen.width / Number(window.devicePixelRatio || 1)
+    );
   }
 
   function viewportHeight() {
-    return Number((window.visualViewport && window.visualViewport.height) || window.innerHeight || document.documentElement.clientHeight || 0);
+    return firstPositiveNumber(
+      window.visualViewport && window.visualViewport.height,
+      window.innerHeight,
+      document.documentElement && document.documentElement.clientHeight,
+      document.body && document.body.clientHeight,
+      window.screen && window.screen.height / Number(window.devicePixelRatio || 1)
+    );
+  }
+
+  function firstPositiveNumber() {
+    for (const value of arguments) {
+      const number = Number(value);
+      if (Number.isFinite(number) && number > 0) {
+        return number;
+      }
+    }
+    return 0;
   }
 
   function requestNativeTap(clickInfo, label, reason, taskKind) {
     if (!clickInfo || !clickInfo.clicked || !Number.isFinite(clickInfo.clientX) || !Number.isFinite(clickInfo.clientY)) {
+      return false;
+    }
+    const width = firstPositiveNumber(clickInfo.viewportWidth, viewportWidth(), document.documentElement && document.documentElement.clientWidth);
+    const height = firstPositiveNumber(clickInfo.viewportHeight, viewportHeight(), document.documentElement && document.documentElement.clientHeight);
+    if (width <= 0 || height <= 0) {
       return false;
     }
     const message = {
@@ -995,8 +1031,8 @@
       label: String(label || "").slice(0, 80),
       clientX: clickInfo.clientX,
       clientY: clickInfo.clientY,
-      viewportWidth: clickInfo.viewportWidth,
-      viewportHeight: clickInfo.viewportHeight,
+      viewportWidth: width,
+      viewportHeight: height,
       devicePixelRatio: clickInfo.devicePixelRatio,
       timestamp: Date.now()
     };
@@ -1074,11 +1110,12 @@
     const candidates = uniqueElements(raw)
       .filter((element) => visible(element) && isLikelyPlaylistItem(element))
       .sort((left, right) => {
-        const leftRect = left.getBoundingClientRect();
-        const rightRect = right.getBoundingClientRect();
-        return playlistScore(left) - playlistScore(right)
-          || leftRect.top - rightRect.top
-          || rightRect.left - leftRect.left;
+        const leftOrder = playlistOrderInfo(left);
+        const rightOrder = playlistOrderInfo(right);
+        return leftOrder.column - rightOrder.column
+          || leftOrder.top - rightOrder.top
+          || leftOrder.left - rightOrder.left
+          || playlistScore(left) - playlistScore(right);
       });
     const unfinished = candidates.filter((element) => !isCompletedPlaylistItem(element));
     return unfinished.length ? unfinished : candidates;
@@ -1141,6 +1178,15 @@
     return score;
   }
 
+  function playlistOrderInfo(element) {
+    const rect = element.getBoundingClientRect();
+    return {
+      column: rect.left < viewportWidth() * 0.45 ? 1 : 0,
+      top: Math.round(rect.top / 4) * 4,
+      left: Math.round(rect.left / 4) * 4
+    };
+  }
+
   function labelForPlaylistItem(element) {
     return compactText(element).replace(/\s+/g, " ").slice(0, 80);
   }
@@ -1201,7 +1247,18 @@
       .map((element) => compactText(element))
       .filter((text) => text.length > 0 && text.length <= 160 && LOGIN_ERROR_RE.test(text));
     const message = candidates[0] || "";
-    return message.replace(/\s+/g, " ").trim();
+    return normalizeLoginErrorMessage(message);
+  }
+
+  function normalizeLoginErrorMessage(message) {
+    const text = String(message || "").replace(/\s+/g, " ").trim();
+    if (!text) {
+      return "";
+    }
+    if (/验证码|短信/.test(text) && !/账号|账户|用户|密码/.test(text)) {
+      return "验证码错误，请重新验证后重试";
+    }
+    return "请检查账号密码后重试";
   }
 
   function findLoginButton() {
@@ -1489,7 +1546,7 @@
     if (isLoginPage()) {
       const result = fillLogin("automation", true);
       if (result.loginError) {
-        finishAutomation(`登录失败：${result.loginError}。请检查账号密码后重新开始刷课。`);
+        finishAutomation(result.loginError || "请检查账号密码后重试");
         return;
       }
       if (result.captchaDetected) {
@@ -1537,6 +1594,12 @@
     if (result.clicked) {
       noteAutomationProgress();
       logAutomation("已点击未完成课程", { label: result.label });
+      return;
+    }
+    if (isWaitingForLessonOpen()) {
+      resetStuckWatchdog();
+      setNextAutomationDelay(DEFAULT_AUTOMATION_DELAY);
+      logAutomation("等待课程页面打开", { label: lastLessonClickLabel });
       return;
     }
     if (result.dayClicked) {
@@ -1699,7 +1762,7 @@
         };
       }
       const now = Date.now();
-      if (now - lastLessonClickAt < 5000) {
+      if (now - lastLessonClickAt < LESSON_OPEN_WAIT_MS) {
         return {
           clicked: false,
           dayClicked: false,
@@ -2243,7 +2306,7 @@
     if (!lastLessonClickSignature) {
       return;
     }
-    const clickTimedOut = Date.now() - lastLessonClickAt > 8000;
+    const clickTimedOut = Date.now() - lastLessonClickAt > LESSON_OPEN_WAIT_MS;
     if (clickTimedOut && location.href === lastLessonClickUrl && !document.querySelector("video")) {
       failedCourseSignatures.add(lastLessonClickSignature);
       logAutomation("课程入口点击后没有进入播放页，已跳过该入口", { label: lastLessonClickLabel });
@@ -2284,7 +2347,7 @@
         return visible(element) && text.length <= 60 && COURSE_ACTION_RE.test(text) && isActionLikeElement(element);
       });
     const oneClickButtons = xpathAll(
-      "//*[normalize-space(.)='去收听' or normalize-space(.)='去查看' or normalize-space(.)='去学习' or normalize-space(.)='开始学习' or normalize-space(.)='继续学习' or normalize-space(.)='播放']"
+      "//*[normalize-space(.)='去收听' or normalize-space(.)='去查看' or normalize-space(.)='去学习' or normalize-space(.)='开始学习' or normalize-space(.)='继续学习' or normalize-space(.)='播放' or normalize-space(.)='学']"
     ).filter(visible).map(actionableElement).filter(isActionLikeElement);
     const missedReplayButtons = findMissedCheckpointReplayButtons();
     const progressCourseButtons = findStudyProgressCourseButtons();
@@ -2296,7 +2359,6 @@
     );
     const broadElements = uniqueElements(lessonButtons.concat(fallbackButtons).map(actionableElement));
     const elements = uniqueElements(strictElements.concat(broadElements));
-    const seenSignatures = new Set();
     return elements
       .filter((element) => visible(element))
       .map((element) => ({
@@ -2307,10 +2369,6 @@
         score: courseActionScore(element)
       }))
       .filter((candidate) => {
-        if (seenSignatures.has(candidate.signature)) {
-          return false;
-        }
-        seenSignatures.add(candidate.signature);
         if (!isActionLikeElement(candidate.element)) {
           return false;
         }
@@ -2326,13 +2384,27 @@
         return !isClosedCourseElement(candidate.element);
       })
       .sort((left, right) => {
-        const leftRect = left.element.getBoundingClientRect();
-        const rightRect = right.element.getBoundingClientRect();
-        return courseKindWeight(left.kind) - courseKindWeight(right.kind)
+        const leftOrder = courseOrderInfo(left.element);
+        const rightOrder = courseOrderInfo(right.element);
+        return leftOrder.top - rightOrder.top
+          || leftOrder.left - rightOrder.left
+          || leftOrder.actionTop - rightOrder.actionTop
+          || courseKindWeight(left.kind) - courseKindWeight(right.kind)
           || left.score - right.score
-          || leftRect.top - rightRect.top
-          || leftRect.left - rightRect.left;
-      });
+          || leftOrder.actionLeft - rightOrder.actionLeft;
+      })
+      .filter(uniqueCourseCandidateSignature());
+  }
+
+  function uniqueCourseCandidateSignature() {
+    const seenSignatures = new Set();
+    return (candidate) => {
+      if (seenSignatures.has(candidate.signature)) {
+        return false;
+      }
+      seenSignatures.add(candidate.signature);
+      return true;
+    };
   }
 
   function findFallbackCourseButtons() {
@@ -2551,7 +2623,7 @@
     if (isMissedCheckpointReplayContext(element)) {
       return -1;
     }
-    if (/去学习|开始学习|继续学习/.test(text)) {
+    if (/去学习|开始学习|继续学习/.test(text) || EXACT_STUDY_BUTTON_RE.test(text)) {
       return 0;
     }
     if (EXACT_STUDY_PROGRESS_RE.test(text)) {
@@ -2567,6 +2639,18 @@
       return 4;
     }
     return 8;
+  }
+
+  function courseOrderInfo(element) {
+    const container = courseContainer(element);
+    const containerRect = container.getBoundingClientRect();
+    const actionRect = element.getBoundingClientRect();
+    return {
+      top: Math.round(containerRect.top / 4) * 4,
+      left: Math.round(containerRect.left / 4) * 4,
+      actionTop: Math.round(actionRect.top / 4) * 4,
+      actionLeft: Math.round(actionRect.left / 4) * 4
+    };
   }
 
   function uniqueElements(elements) {

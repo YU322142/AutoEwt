@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -83,6 +84,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.mozilla.geckoview.GeckoView
 import java.util.Locale
@@ -236,6 +239,7 @@ interface AutoEwtUiController {
     fun cancelListUrlDiscoveryFromUi()
     fun dismissOobeFromUi()
     fun openConfigFromOobeFromUi()
+    fun resetAppToOobeFromUi()
     fun requestNotificationPermissionFromUi()
 }
 
@@ -277,7 +281,21 @@ private fun AutoEwtApp(controller: AutoEwtUiController) {
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             if (state.oobeVisible) {
-                OobeScreen(controller, onHelpClick = { helpVisible = true })
+                if (state.listUrlDiscoveryRunning) {
+                    HiddenBrowserHost(
+                        controller = controller,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .zIndex(-1f)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(1f)
+                ) {
+                    OobeScreen(controller, onHelpClick = { helpVisible = true })
+                }
             } else {
                 Column(modifier = Modifier.fillMaxSize()) {
                     AppHeader(controller, onHelpClick = { helpVisible = true })
@@ -363,6 +381,8 @@ private fun BrowserScreen(controller: AutoEwtUiController) {
             availableHeight < 720.dp -> 260.dp
             else -> 320.dp
         }.coerceAtMost(availableHeight * 0.45f)
+        val hiddenBrowserWidth = (maxWidth - 20.dp).coerceAtLeast(320.dp).coerceAtMost(960.dp)
+        val hiddenBrowserHeight = compactBrowserHeight.coerceAtLeast(240.dp)
         val state = controller.state
         Box(modifier = Modifier.fillMaxSize()) {
             if (wide) {
@@ -411,7 +431,9 @@ private fun BrowserScreen(controller: AutoEwtUiController) {
             if (!state.browserVisible) {
                 HiddenBrowserHost(
                     controller = controller,
-                    modifier = Modifier.align(Alignment.BottomEnd)
+                    modifier = Modifier.align(Alignment.BottomEnd),
+                    width = hiddenBrowserWidth,
+                    height = hiddenBrowserHeight
                 )
             }
         }
@@ -758,13 +780,26 @@ private fun BrowserActionButtons(
 
 @Composable
 private fun BrowserViewAndLogChips(controller: AutoEwtUiController, state: AutoEwtUiState) {
+    var browserToggleLocked by remember { mutableStateOf(false) }
+    LaunchedEffect(browserToggleLocked) {
+        if (browserToggleLocked) {
+            delay(320)
+            browserToggleLocked = false
+        }
+    }
     ControlButtonGrid(
         actions = listOf(
             ControlButtonSpec(
                 icon = R.drawable.ic_open,
                 text = "浏览器",
+                enabled = !browserToggleLocked,
                 selected = state.browserVisible,
-                onClick = { controller.setBrowserVisibleFromUi(!state.browserVisible) }
+                onClick = {
+                    if (!browserToggleLocked) {
+                        browserToggleLocked = true
+                        controller.setBrowserVisibleFromUi(!state.browserVisible)
+                    }
+                }
             ),
             ControlButtonSpec(
                 icon = R.drawable.ic_log_full,
@@ -892,13 +927,19 @@ private fun BrowserWorkspace(
 }
 
 @Composable
-private fun HiddenBrowserHost(controller: AutoEwtUiController, modifier: Modifier = Modifier) {
+private fun HiddenBrowserHost(
+    controller: AutoEwtUiController,
+    modifier: Modifier = Modifier,
+    width: Dp = 480.dp,
+    height: Dp = 320.dp
+) {
     Box(
         modifier = modifier
-            .size(1.dp)
+            .size(width = width, height = height)
+            .offset(x = width + 24.dp, y = height + 24.dp)
             .clip(RoundedCornerShape(1.dp))
     ) {
-        BrowserView(controller, Modifier.size(1.dp))
+        BrowserView(controller, Modifier.fillMaxSize())
     }
 }
 
@@ -1094,6 +1135,7 @@ private fun OobeScreen(controller: AutoEwtUiController, onHelpClick: () -> Unit)
     val lastStep = titles.lastIndex
     var step by remember { mutableIntStateOf(state.oobeStep.coerceIn(0, lastStep)) }
     var stepHelpVisible by remember { mutableStateOf(false) }
+    val navigationEnabled = !state.listUrlDiscoveryRunning && !state.automationRunning
 
     LaunchedEffect(state.oobeStep) {
         step = state.oobeStep.coerceIn(0, lastStep)
@@ -1128,7 +1170,10 @@ private fun OobeScreen(controller: AutoEwtUiController, onHelpClick: () -> Unit)
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            TextButton(onClick = controller::dismissOobeFromUi) {
+            TextButton(
+                onClick = controller::dismissOobeFromUi,
+                enabled = navigationEnabled
+            ) {
                 Text("跳过")
             }
             IconButton(onClick = { stepHelpVisible = true }) {
@@ -1171,7 +1216,7 @@ private fun OobeScreen(controller: AutoEwtUiController, onHelpClick: () -> Unit)
         ) {
             OutlinedButton(
                 onClick = { setStep(step - 1) },
-                enabled = step > 0,
+                enabled = navigationEnabled && step > 0,
                 modifier = Modifier.weight(1f)
             ) {
                 Text("上一步")
@@ -1184,6 +1229,7 @@ private fun OobeScreen(controller: AutoEwtUiController, onHelpClick: () -> Unit)
                         }
                         setStep(step + 1)
                     },
+                    enabled = navigationEnabled,
                     modifier = Modifier.weight(1f)
                 ) {
                     Text("下一步")
@@ -1194,6 +1240,7 @@ private fun OobeScreen(controller: AutoEwtUiController, onHelpClick: () -> Unit)
                         controller.saveConfigFromUi()
                         controller.dismissOobeFromUi()
                     },
+                    enabled = navigationEnabled,
                     modifier = Modifier.weight(1f)
                 ) {
                     Text("完成")
@@ -1230,8 +1277,8 @@ private fun OobeStepHelpDialog(
             "自动获取失败时才会显示手动 URL 输入框；验证码或短信验证需要你在浏览器里手动完成。"
         )
         else -> listOf(
-            "“保存进入主界面”只保存配置；“保存并打开课程”会进入已选择任务；“开始运行”会保存并立刻启动自动化。",
-            "启动后可以隐藏浏览器或日志，隐藏浏览器不会暂停自动化。"
+            "“完成”会保存配置并进入主界面；也可以在本页直接保存并打开课程或开始运行。",
+            "之后要更换课程，不需要重新打开初始化向导。进入主界面的配置页，在“课程任务”里重新自动获取并选择任务即可。"
         )
     }
     AlertDialog(
@@ -1270,7 +1317,7 @@ private fun OobeWelcomeStep() {
     HelpSectionTitle("接下来会做什么")
     OobeStep("1", "确认后台运行方式，避免息屏或退到后台后任务过早停止。")
     OobeStep("2", "填写账号和密码，然后自动获取并选择要刷的任务。")
-    OobeStep("3", "保存后进入主界面；刷完一个任务后，可以重新自动获取并选择下一个任务。")
+    OobeStep("3", "保存后进入主界面；刷完一个任务后，到配置页重新自动获取并选择下一个任务。")
 }
 
 @Composable
@@ -1357,7 +1404,7 @@ private fun CourseListUrlSelection(controller: AutoEwtUiController) {
         if (state.listUrlDiscoveryMessage.isNotBlank()) {
             WarningBox(state.listUrlDiscoveryMessage)
         }
-        HelpParagraph("刷完一个任务后，可以回到这里重新自动获取并选择下一个任务。已完成任务会自动隐藏，已截止但未完成的任务仍可选择。")
+        HelpParagraph("刷完一个任务后，到主界面的配置页重新自动获取并选择下一个任务。已完成任务会自动隐藏，已截止但未完成的任务仍可选择。")
     }
     AnimatedVisibility(visible = state.listUrlManualEntryVisible) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1450,6 +1497,7 @@ private fun OobeReadyStep(controller: AutoEwtUiController) {
     OobeSummaryLine("后台保活", if (state.backgroundKeepAlive) "开启" else "关闭")
     OobeSummaryLine("浏览器模式", if (state.desktopMode) "桌面模式" else "移动模式")
     WarningBox("启动后可以隐藏浏览器或日志；隐藏浏览器不会暂停自动化。")
+    HelpParagraph("以后需要更换课程时，不用回到初始化向导；进入主界面的配置页，在“课程任务”中重新自动获取并选择任务。")
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1742,28 +1790,25 @@ private fun CandidateMetaLine(label: String, value: String) {
 @Composable
 private fun ConfigScreen(controller: AutoEwtUiController) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val wide = maxWidth >= 600.dp
-        if (wide) {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                ConfigIdentityPanel(controller, Modifier.weight(1f))
-                ConfigRunPanel(controller, Modifier.weight(1f))
-            }
+        val cardModifier = if (maxWidth >= 720.dp) {
+            Modifier
+                .widthIn(max = 760.dp)
+                .fillMaxWidth()
         } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                ConfigIdentityPanel(controller)
-                ConfigRunPanel(controller)
-            }
+            Modifier.fillMaxWidth()
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ConfigIdentityPanel(controller, cardModifier)
+            ConfigBackgroundPanel(controller, cardModifier)
+            ConfigAdvancedPanel(controller, cardModifier)
+            ConfigResetPanel(controller, cardModifier)
         }
     }
 }
@@ -1815,9 +1860,36 @@ private fun ConfigIdentityPanel(controller: AutoEwtUiController, modifier: Modif
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
-private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier = Modifier) {
+private fun ConfigBackgroundPanel(controller: AutoEwtUiController, modifier: Modifier = Modifier) {
+    val state = controller.state
+    val inputsEnabled = !state.automationRunning && !state.listUrlDiscoveryRunning
+    Panel(modifier = modifier) {
+        SectionTitle("后台运行")
+        CheckRow(
+            checked = state.backgroundKeepAlive,
+            onCheckedChange = { state.backgroundKeepAlive = it },
+            text = "运行时显示常驻通知并保持 CPU 唤醒",
+            enabled = inputsEnabled
+        )
+        HelpParagraph("开启后可以降低息屏、切后台后自动化被暂停或清理的概率。请不要从最近任务中划掉应用，长时间运行建议接入电源。")
+        if (state.backgroundKeepAlive && !state.notificationPermissionGranted) {
+            WarningBox("当前未允许通知权限，后台运行通知可能无法显示。Android 13 及以上建议开启。")
+            OutlinedButton(
+                onClick = controller::requestNotificationPermissionFromUi,
+                enabled = inputsEnabled,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                ActionIcon(R.drawable.ic_help)
+                Spacer(Modifier.width(6.dp))
+                Text("允许通知权限")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfigAdvancedPanel(controller: AutoEwtUiController, modifier: Modifier = Modifier) {
     val state = controller.state
     val inputsEnabled = !state.automationRunning && !state.listUrlDiscoveryRunning
     var advancedExpanded by remember { mutableStateOf(false) }
@@ -1873,25 +1945,56 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
                 enabled = inputsEnabled
             )
         }
-        HorizontalDivider()
-        SectionTitle("后台运行")
-        CheckRow(
-            checked = state.backgroundKeepAlive,
-            onCheckedChange = { state.backgroundKeepAlive = it },
-            text = "运行时显示常驻通知并保持 CPU 唤醒",
-            enabled = inputsEnabled
-        )
-        if (state.backgroundKeepAlive && !state.notificationPermissionGranted) {
-            WarningBox("当前未允许通知权限，后台运行通知可能无法显示。Android 13 及以上建议开启。")
-            OutlinedButton(
-                onClick = controller::requestNotificationPermissionFromUi,
-                enabled = inputsEnabled
-            ) {
-                ActionIcon(R.drawable.ic_help)
-                Spacer(Modifier.width(6.dp))
-                Text("允许通知权限")
-            }
+    }
+}
+
+@Composable
+private fun ConfigResetPanel(controller: AutoEwtUiController, modifier: Modifier = Modifier) {
+    var resetConfirmVisible by remember { mutableStateOf(false) }
+    Panel(modifier = modifier) {
+        SectionTitle("初始化")
+        HelpParagraph("需要重新走首次引导时，可以清空本应用保存的配置并回到 OOBE。更换课程通常不需要初始化，直接在“课程任务”里重新自动获取即可。")
+        OutlinedButton(
+            onClick = { resetConfirmVisible = true },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            ActionIcon(R.drawable.ic_restart)
+            Spacer(Modifier.width(6.dp))
+            Text("重新初始化软件")
         }
+    }
+    if (resetConfirmVisible) {
+        AlertDialog(
+            onDismissRequest = { resetConfirmVisible = false },
+            shape = RoundedCornerShape(8.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = {
+                Text(
+                    text = "重新初始化软件？",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    HelpParagraph("这会清空本应用保存的账号、密码、课程任务 URL、运行设置和 OOBE 完成状态，并回到首次引导。")
+                    WarningBox("平台账号本身不会被修改；如果只是换课程，请取消并使用“课程任务”里的重新自动获取。")
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    resetConfirmVisible = false
+                    controller.resetAppToOobeFromUi()
+                }) {
+                    Text("确认初始化")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { resetConfirmVisible = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 
