@@ -429,6 +429,7 @@ private fun BrowserControlColumn(
         if (addressExpanded) {
             AddressBar(
                 controller = controller,
+                enabled = !state.automationRunning && !state.listUrlDiscoveryRunning,
                 onCollapse = { addressExpanded = false }
             )
         }
@@ -476,7 +477,11 @@ private fun BrowserControlColumn(
 }
 
 @Composable
-private fun AddressBar(controller: AutoEwtUiController, onCollapse: (() -> Unit)? = null) {
+private fun AddressBar(
+    controller: AutoEwtUiController,
+    enabled: Boolean = true,
+    onCollapse: (() -> Unit)? = null
+) {
     val state = controller.state
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val useStackedControls = maxWidth < 360.dp && onCollapse != null
@@ -485,6 +490,7 @@ private fun AddressBar(controller: AutoEwtUiController, onCollapse: (() -> Unit)
                 OutlinedTextField(
                     value = state.url,
                     onValueChange = { state.url = it },
+                    enabled = enabled,
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     label = { Text("地址") },
@@ -498,6 +504,7 @@ private fun AddressBar(controller: AutoEwtUiController, onCollapse: (() -> Unit)
                     ActionButton(
                         icon = R.drawable.ic_open,
                         text = "打开",
+                        enabled = enabled,
                         onClick = { controller.openUrlFromUi(state.url) },
                         modifier = Modifier.weight(1f)
                     )
@@ -518,6 +525,7 @@ private fun AddressBar(controller: AutoEwtUiController, onCollapse: (() -> Unit)
                 OutlinedTextField(
                     value = state.url,
                     onValueChange = { state.url = it },
+                    enabled = enabled,
                     modifier = Modifier.weight(1f),
                     singleLine = true,
                     label = { Text("地址") },
@@ -526,6 +534,7 @@ private fun AddressBar(controller: AutoEwtUiController, onCollapse: (() -> Unit)
                 ActionButton(
                     icon = R.drawable.ic_open,
                     text = "打开",
+                    enabled = enabled,
                     onClick = { controller.openUrlFromUi(state.url) },
                     modifier = Modifier.widthIn(min = 72.dp)
                 )
@@ -662,6 +671,30 @@ private fun BrowserActionButtons(
     onToggleAddress: () -> Unit
 ) {
     val actions = mutableListOf<ControlButtonSpec>()
+    if (state.listUrlDiscoveryRunning) {
+        actions.add(
+            ControlButtonSpec(
+                R.drawable.ic_stop,
+                "取消获取",
+                destructive = true,
+                onClick = controller::cancelListUrlDiscoveryFromUi
+            )
+        )
+        ControlButtonGrid(actions = actions, minCellWidth = DashboardButtonMinWidth)
+        return
+    }
+    if (state.automationRunning) {
+        actions.add(
+            ControlButtonSpec(
+                R.drawable.ic_stop,
+                "停止",
+                destructive = true,
+                onClick = controller::stopAutomationFromUi
+            )
+        )
+        ControlButtonGrid(actions = actions, minCellWidth = DashboardButtonMinWidth)
+        return
+    }
     actions.add(
         ControlButtonSpec(
             icon = R.drawable.ic_link,
@@ -670,23 +703,18 @@ private fun BrowserActionButtons(
             onClick = onToggleAddress
         )
     )
-    if (!state.automationRunning) {
-        actions.add(ControlButtonSpec(R.drawable.ic_course, "打开课程", onClick = controller::openConfiguredCourseFromUi))
-    }
+    actions.add(ControlButtonSpec(R.drawable.ic_course, "打开课程", onClick = controller::openConfiguredCourseFromUi))
     actions.add(
         ControlButtonSpec(
-            icon = if (state.automationRunning) R.drawable.ic_stop else R.drawable.ic_play,
-            text = if (state.automationRunning) "停止" else "开始刷课",
-            primary = !state.automationRunning,
-            destructive = state.automationRunning,
-            onClick = if (state.automationRunning) controller::stopAutomationFromUi else controller::startAutomationFromUi
+            icon = R.drawable.ic_play,
+            text = "开始刷课",
+            primary = true,
+            onClick = controller::startAutomationFromUi
         )
     )
     actions.add(ControlButtonSpec(R.drawable.ic_restart, "重启", onClick = controller::restartSessionFromUi))
-    if (!state.automationRunning) {
-        actions.add(ControlButtonSpec(R.drawable.ic_login, "填登录", onClick = controller::requestFillLoginFromUi))
-        actions.add(ControlButtonSpec(R.drawable.ic_probe, "探测", onClick = controller::requestProbeFromUi))
-    }
+    actions.add(ControlButtonSpec(R.drawable.ic_login, "填登录", onClick = controller::requestFillLoginFromUi))
+    actions.add(ControlButtonSpec(R.drawable.ic_probe, "探测", onClick = controller::requestProbeFromUi))
     ControlButtonGrid(actions = actions, minCellWidth = DashboardButtonMinWidth)
 }
 
@@ -1220,10 +1248,12 @@ private fun OobeBackgroundStep(controller: AutoEwtUiController) {
 @Composable
 private fun OobeAccountStep(controller: AutoEwtUiController) {
     val state = controller.state
+    val inputsEnabled = !state.automationRunning && !state.listUrlDiscoveryRunning
     HelpSectionTitle("登录信息")
     OutlinedTextField(
         value = state.username,
         onValueChange = { state.username = it },
+        enabled = inputsEnabled,
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
         label = { Text("账号") }
@@ -1231,6 +1261,7 @@ private fun OobeAccountStep(controller: AutoEwtUiController) {
     OutlinedTextField(
         value = state.password,
         onValueChange = { state.password = it },
+        enabled = inputsEnabled,
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
         label = { Text("密码") },
@@ -1245,12 +1276,13 @@ private fun OobeAccountStep(controller: AutoEwtUiController) {
 @Composable
 private fun CourseListUrlSelection(controller: AutoEwtUiController) {
     val state = controller.state
+    val controlsEnabled = !state.automationRunning && !state.listUrlDiscoveryRunning
     if (state.listUrl.isNotBlank() && !state.listUrlManualEntryVisible) {
         SelectedListUrlStatus(state.listUrl)
     }
     Button(
         onClick = controller::discoverListUrlFromUi,
-        enabled = !state.listUrlDiscoveryRunning,
+        enabled = controlsEnabled,
         modifier = Modifier.fillMaxWidth(),
         contentPadding = ButtonDefaults.ButtonWithIconContentPadding
     ) {
@@ -1260,12 +1292,20 @@ private fun CourseListUrlSelection(controller: AutoEwtUiController) {
     }
     if (state.listUrlDiscoveryRunning) {
         OobeStatusLine(state.listUrlDiscoveryMessage.ifBlank { "正在获取课程列表 URL" })
+        OutlinedButton(
+            onClick = controller::cancelListUrlDiscoveryFromUi,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            ActionIcon(R.drawable.ic_stop)
+            Spacer(Modifier.width(6.dp))
+            Text("取消获取")
+        }
     } else {
         HelpParagraph("刷完一个任务后，可以回到这里重新自动获取并选择下一个任务。已完成任务会自动隐藏，已截止但未完成的任务仍可选择。")
     }
     AnimatedVisibility(visible = state.listUrlManualEntryVisible) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            ManualListUrlFallbackField(state)
+            ManualListUrlFallbackField(state, enabled = controlsEnabled)
         }
     }
 }
@@ -1302,11 +1342,12 @@ private fun SelectedListUrlStatus(listUrl: String) {
 }
 
 @Composable
-private fun ManualListUrlFallbackField(state: AutoEwtUiState) {
+private fun ManualListUrlFallbackField(state: AutoEwtUiState, enabled: Boolean) {
     WarningBox("自动获取失败时才需要手动填写。这里对应 README / config.yml 里的 list_url。")
     OutlinedTextField(
         value = state.listUrl,
         onValueChange = { state.listUrl = it },
+        enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
         label = { Text("手动填写 list_url") },
@@ -1648,11 +1689,13 @@ private fun ConfigScreen(controller: AutoEwtUiController) {
 @Composable
 private fun ConfigIdentityPanel(controller: AutoEwtUiController, modifier: Modifier = Modifier) {
     val state = controller.state
+    val inputsEnabled = !state.automationRunning && !state.listUrlDiscoveryRunning
     Panel(modifier = modifier) {
         SectionTitle("账号与课程")
         OutlinedTextField(
             value = state.username,
             onValueChange = { state.username = it },
+            enabled = inputsEnabled,
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             label = { Text("账号") }
@@ -1660,6 +1703,7 @@ private fun ConfigIdentityPanel(controller: AutoEwtUiController, modifier: Modif
         OutlinedTextField(
             value = state.password,
             onValueChange = { state.password = it },
+            enabled = inputsEnabled,
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             label = { Text("密码") },
@@ -1673,10 +1717,16 @@ private fun ConfigIdentityPanel(controller: AutoEwtUiController, modifier: Modif
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Button(onClick = controller::saveConfigFromUi) {
+            Button(
+                onClick = controller::saveConfigFromUi,
+                enabled = inputsEnabled
+            ) {
                 Text("保存配置")
             }
-            OutlinedButton(onClick = controller::saveAndOpenFromUi) {
+            OutlinedButton(
+                onClick = controller::saveAndOpenFromUi,
+                enabled = inputsEnabled
+            ) {
                 Text("保存并打开")
             }
         }
@@ -1687,6 +1737,7 @@ private fun ConfigIdentityPanel(controller: AutoEwtUiController, modifier: Modif
 @Composable
 private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier = Modifier) {
     val state = controller.state
+    val inputsEnabled = !state.automationRunning && !state.listUrlDiscoveryRunning
     var advancedExpanded by remember { mutableStateOf(false) }
     Panel(modifier = modifier) {
         Row(
@@ -1714,6 +1765,7 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
             OutlinedTextField(
                 value = state.dayToStartOn,
                 onValueChange = { state.dayToStartOn = it.filter(Char::isDigit) },
+                enabled = inputsEnabled,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 label = { Text("从第几天开始") },
@@ -1722,11 +1774,13 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
             CheckRow(
                 checked = state.chooseCorrectly,
                 onCheckedChange = { state.chooseCorrectly = it },
-                text = "做题时选择正确答案"
+                text = "做题时选择正确答案",
+                enabled = inputsEnabled
             )
             OutlinedTextField(
                 value = state.reportId,
                 onValueChange = { state.reportId = it },
+                enabled = inputsEnabled,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 label = { Text("report_id") }
@@ -1741,12 +1795,14 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
                 FilterChip(
                     selected = state.mode == "video",
                     onClick = { state.mode = "video" },
+                    enabled = inputsEnabled,
                     label = { Text("刷课") },
                     leadingIcon = { ActionIcon(R.drawable.ic_play) }
                 )
                 FilterChip(
                     selected = state.mode == "paper",
                     onClick = { state.mode = "paper" },
+                    enabled = inputsEnabled,
                     label = { Text("做题") },
                     leadingIcon = { ActionIcon(R.drawable.ic_course) }
                 )
@@ -1755,17 +1811,20 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
             CheckRow(
                 checked = state.autoFillLogin,
                 onCheckedChange = { state.autoFillLogin = it },
-                text = "自动填入账号密码"
+                text = "自动填入账号密码",
+                enabled = inputsEnabled
             )
             CheckRow(
                 checked = state.autoSubmitLogin,
                 onCheckedChange = { state.autoSubmitLogin = it },
-                text = "填入后自动登录"
+                text = "填入后自动登录",
+                enabled = inputsEnabled
             )
             CheckRow(
                 checked = state.desktopMode,
                 onCheckedChange = { state.desktopMode = it },
-                text = "桌面浏览器模式"
+                text = "桌面浏览器模式",
+                enabled = inputsEnabled
             )
         }
         HorizontalDivider()
@@ -1773,11 +1832,15 @@ private fun ConfigRunPanel(controller: AutoEwtUiController, modifier: Modifier =
         CheckRow(
             checked = state.backgroundKeepAlive,
             onCheckedChange = { state.backgroundKeepAlive = it },
-            text = "运行时显示常驻通知并保持 CPU 唤醒"
+            text = "运行时显示常驻通知并保持 CPU 唤醒",
+            enabled = inputsEnabled
         )
         if (state.backgroundKeepAlive && !state.notificationPermissionGranted) {
             WarningBox("当前未允许通知权限，后台运行通知可能无法显示。Android 13 及以上建议开启。")
-            OutlinedButton(onClick = controller::requestNotificationPermissionFromUi) {
+            OutlinedButton(
+                onClick = controller::requestNotificationPermissionFromUi,
+                enabled = inputsEnabled
+            ) {
                 ActionIcon(R.drawable.ic_help)
                 Spacer(Modifier.width(6.dp))
                 Text("允许通知权限")
@@ -1825,15 +1888,21 @@ private fun SectionTitle(text: String) {
 }
 
 @Composable
-private fun CheckRow(checked: Boolean, onCheckedChange: (Boolean) -> Unit, text: String) {
+private fun CheckRow(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    text: String,
+    enabled: Boolean = true
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
         Text(
             text = text,
             modifier = Modifier.weight(1f),
+            color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
             style = MaterialTheme.typography.bodyMedium
         )
     }

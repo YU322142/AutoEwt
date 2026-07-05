@@ -53,6 +53,7 @@
   let urlDiscoveryFilterIndex = 0;
   let urlDiscoveryPendingFilter = "";
   let urlDiscoveryAttempts = 0;
+  let urlDiscoveryHomeworkWaits = 0;
   let urlDiscoveryInitialOverviewUrl = "";
   let urlDiscoverySawHomeworkPage = false;
   let urlDiscoveryTargetUrl = "";
@@ -283,6 +284,7 @@
     urlDiscoveryFilterIndex = 0;
     urlDiscoveryPendingFilter = "";
     urlDiscoveryAttempts = 0;
+    urlDiscoveryHomeworkWaits = 0;
     urlDiscoveryInitialOverviewUrl = isTaskOverviewPage() ? location.href : "";
     urlDiscoverySawHomeworkPage = false;
     urlDiscoveryTargetUrl = String(targetUrl || "");
@@ -366,6 +368,12 @@
     }
 
     if (!isStudentHomeworkPage()) {
+      if (urlDiscoveryTargetUrl && !isLoginPage()) {
+        location.href = urlDiscoveryTargetUrl;
+        postListUrlDiscoveryLog("正在进入任务列表页");
+        scheduleListUrlDiscovery(1500);
+        return;
+      }
       if (urlDiscoveryTargetUrl && isTaskOverviewPage()) {
         location.href = urlDiscoveryTargetUrl;
         postListUrlDiscoveryLog("当前仍在旧任务详情页，继续返回任务列表");
@@ -385,6 +393,20 @@
       }
       scheduleListUrlDiscovery(URL_DISCOVERY_RETRY_DELAY);
       return;
+    }
+
+    if (!homeworkDiscoveryUiReady()) {
+      urlDiscoveryHomeworkWaits += 1;
+      if (urlDiscoveryHomeworkWaits <= 15) {
+        if (urlDiscoveryHomeworkWaits === 1 || urlDiscoveryHomeworkWaits % 5 === 0) {
+          postListUrlDiscoveryLog("等待任务列表加载");
+        }
+        scheduleListUrlDiscovery(1000);
+        return;
+      }
+      postListUrlDiscoveryLog("任务列表加载较慢，继续尝试扫描");
+    } else {
+      urlDiscoveryHomeworkWaits = 0;
     }
 
     hideCompletedDiscoveryTasks();
@@ -493,6 +515,16 @@
   }
 
   function clickDiscoveryFilter(label) {
+    const target = findDiscoveryFilter(label);
+    if (!target) {
+      return false;
+    }
+    const clickInfo = clickElementInfo(target);
+    requestNativeTap(clickInfo, label, "discoverFilter");
+    return clickInfo.clicked;
+  }
+
+  function findDiscoveryFilter(label) {
     const candidates = Array.from(document.querySelectorAll("li, a, button, [role='button'], span, div"))
       .filter((element) => {
         if (!visible(element)) {
@@ -508,13 +540,19 @@
       .map((element) => element.closest("li, a, button, [role='button']") || element)
       .filter(visible)
       .sort((left, right) => elementArea(left) - elementArea(right));
-    const target = candidates[0] || null;
-    if (!target) {
-      return false;
+    return candidates[0] || null;
+  }
+
+  function homeworkDiscoveryUiReady() {
+    if (DISCOVERY_FILTERS.some((label) => findDiscoveryFilter(label))) {
+      return true;
     }
-    const clickInfo = clickElementInfo(target);
-    requestNativeTap(clickInfo, label, "discoverFilter");
-    return clickInfo.clicked;
+    if (discoveryTaskCards(false).length > 0 || discoveryTaskCards(true).length > 0) {
+      return true;
+    }
+    const bodyText = compactText(document.body).slice(0, 2000);
+    return DISCOVERY_FILTERS.some((label) => bodyText.includes(label))
+      && /我的任务|布置人|开始时间|截止时间|查看详情|去完成|去学习/.test(bodyText);
   }
 
   function hideCompletedDiscoveryTasks() {

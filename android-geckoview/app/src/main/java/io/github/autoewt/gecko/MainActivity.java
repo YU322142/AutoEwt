@@ -614,7 +614,14 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     @Override
     public void discoverListUrlFromUi() {
         saveConfigFromForm(true);
-        startListUrlDiscovery();
+        leaveOobeForBrowserIfNeeded();
+        showBrowserPage();
+        setBrowserVisibleFromUi(true);
+        if (geckoView != null) {
+            geckoView.postDelayed(this::startListUrlDiscovery, 150);
+        } else {
+            startListUrlDiscovery();
+        }
     }
 
     @Override
@@ -687,6 +694,13 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     public void requestNotificationPermissionFromUi() {
         requestPostNotificationsIfNeeded(true);
         updateNotificationPermissionState();
+    }
+
+    private void leaveOobeForBrowserIfNeeded() {
+        if (uiState != null && uiState.getOobeVisible()) {
+            prefs.edit().putBoolean(KEY_OOBE_DONE, true).apply();
+            uiState.setOobeVisible(false);
+        }
     }
 
     private void createRuntime() {
@@ -917,7 +931,11 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         setBrowserVisibleFromUi(true);
         log("开始自动获取课程列表 URL：将隐藏已完成任务，并扫描进行中、未开始、已截止任务");
         load(HOMEWORK_DISCOVERY_URL);
-        sendListUrlDiscoveryCommand();
+        if (geckoView != null) {
+            geckoView.postDelayed(this::sendListUrlDiscoveryCommand, 500);
+        } else {
+            sendListUrlDiscoveryCommand();
+        }
     }
 
     private void sendListUrlDiscoveryCommand() {
