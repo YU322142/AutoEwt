@@ -14,6 +14,7 @@
   const MISSED_CHECKPOINT_RE = /错过了所有看课检测点|再认真观看一次/;
   const DAY_DATE_RE = /(\d{1,2})\s*月\s*(\d{1,2})\s*日/;
   const DAY_INDEX_RE = /第\s*\d+\s*天/;
+  const COURSE_GROUP_PROGRESS_RE = /(^|[^已])完成\s*(\d+)\s*\/\s*(\d+)/;
   const DEFAULT_AUTOMATION_DELAY = 1500;
   const DAY_SWITCH_DELAY = 2500;
   const COURSE_PROBE_RETRY_DELAY = 10000;
@@ -70,6 +71,9 @@
   let lastFmEntryUrl = "";
   let dayCursorIndex = -1;
   let dayListSignature = "";
+  let courseGroupCursorIndex = -1;
+  let courseGroupListSignature = "";
+  let lastCourseGroupClickAt = 0;
   const failedCourseSignatures = new Set();
   const finishedOneClickSignatures = new Set();
 
@@ -1326,8 +1330,15 @@
     dayCursorIndex = -1;
     dayListSignature = "";
     lastDayClickAt = 0;
+    resetCourseGroupScanState();
     clearCourseClickState();
     resetStuckWatchdog();
+  }
+
+  function resetCourseGroupScanState() {
+    courseGroupCursorIndex = -1;
+    courseGroupListSignature = "";
+    lastCourseGroupClickAt = 0;
   }
 
   function clearCourseClickState() {
@@ -1418,6 +1429,17 @@
       logAutomation("已切换到任务日期", { dayIndex: result.dayIndex + 1 });
       return;
     }
+    if (result.groupClicked) {
+      noteAutomationProgress();
+      setNextAutomationDelay(DAY_SWITCH_DELAY);
+      logAutomation("已切换到未完成科目/分组", {
+        label: result.label,
+        groupIndex: result.groupIndex + 1,
+        totalGroups: result.totalGroups,
+        incompleteGroups: result.incompleteGroups
+      });
+      return;
+    }
     if (result.totalDays > 0) {
       setNextAutomationDelay(COURSE_PROBE_RETRY_DELAY);
       if (isCourseListExhausted()) {
@@ -1431,7 +1453,9 @@
       logAutomation("暂未找到未完成视频课程", {
         totalDays: result.totalDays,
         dayIndex: result.dayIndex + 1,
-        buttons: result.buttonCount
+        buttons: result.buttonCount,
+        groups: result.totalGroups || 0,
+        incompleteGroups: result.incompleteGroups || 0
       });
     } else {
       setNextAutomationDelay(COURSE_PROBE_RETRY_DELAY);
@@ -1454,12 +1478,19 @@
       if (result.clicked || result.buttonCount > 0) {
         return result;
       }
+      const groupResult = clickNextIncompleteCourseGroup(0, 0);
+      if (groupResult.groupClicked) {
+        return groupResult;
+      }
       return {
         clicked: false,
         dayClicked: false,
+        groupClicked: false,
         totalDays: 0,
         dayIndex: 0,
-        buttonCount: 0
+        buttonCount: 0,
+        totalGroups: groupResult.totalGroups,
+        incompleteGroups: groupResult.incompleteGroups
       };
     }
     syncDayCursor(days, startIndex);
@@ -1471,6 +1502,7 @@
       return {
         clicked: false,
         dayClicked: false,
+        groupClicked: false,
         totalDays: days.length,
         dayIndex: days.length - 1,
         buttonCount: 0
@@ -1482,6 +1514,7 @@
       return {
         clicked: false,
         dayClicked: true,
+        groupClicked: false,
         daySwitchStale: staleDaySwitch,
         dayIndex: dayCursorIndex,
         totalDays: days.length,
@@ -1494,6 +1527,11 @@
       return candidateResult;
     }
 
+    const groupResult = clickNextIncompleteCourseGroup(days.length, Math.max(0, dayCursorIndex));
+    if (groupResult.groupClicked) {
+      return groupResult;
+    }
+
     const nextDayIndex = nextAvailableDayIndex(days, dayCursorIndex, startIndex);
     if (nextDayIndex >= 0) {
       dayCursorIndex = nextDayIndex;
@@ -1501,6 +1539,7 @@
       return {
         clicked: false,
         dayClicked: true,
+        groupClicked: false,
         daySwitchStale: false,
         dayIndex: nextDayIndex,
         totalDays: days.length,
@@ -1511,9 +1550,12 @@
     return {
       clicked: false,
       dayClicked: false,
+      groupClicked: false,
       totalDays: days.length,
       dayIndex: Math.max(0, dayCursorIndex),
-      buttonCount: candidateResult.buttonCount
+      buttonCount: candidateResult.buttonCount,
+      totalGroups: groupResult.totalGroups,
+      incompleteGroups: groupResult.incompleteGroups
     };
   }
 
@@ -1526,6 +1568,7 @@
         return {
           clicked: false,
           dayClicked: false,
+          groupClicked: false,
           totalDays,
           dayIndex,
           buttonCount: candidates.length
@@ -1536,6 +1579,7 @@
         return {
           clicked: false,
           dayClicked: false,
+          groupClicked: false,
           totalDays,
           dayIndex,
           buttonCount: candidates.length
@@ -1554,6 +1598,7 @@
         clicked: true,
         label: candidate.label,
         dayClicked: false,
+        groupClicked: false,
         totalDays,
         dayIndex,
         buttonCount: candidates.length
@@ -1563,6 +1608,7 @@
     return {
       clicked: false,
       dayClicked: false,
+      groupClicked: false,
       totalDays,
       dayIndex,
       buttonCount: candidates.length
@@ -1577,6 +1623,9 @@
     if (!bodyText || /加载中|正在加载|请稍候|loading/i.test(bodyText)) {
       return false;
     }
+    if (hasIncompleteCompletionProgressText(bodyText)) {
+      return false;
+    }
     if (/没有更多(?:必学|视频|学习|课程)?任务了?|暂无(?:必学|视频|学习|课程)?任务/.test(bodyText)) {
       return true;
     }
@@ -1585,11 +1634,226 @@
     return hasCourseListContent && !hasOpenCourseText;
   }
 
+  function hasIncompleteCompletionProgressText(text) {
+    return completionProgresses(text).some((progress) => progress.done < progress.total);
+  }
+
+  function completionProgresses(text) {
+    const progresses = [];
+    const pattern = /(^|[^已])完成\s*(\d+)\s*\/\s*(\d+)/g;
+    const source = String(text || "");
+    let match = pattern.exec(source);
+    while (match) {
+      const done = Number(match[2]);
+      const total = Number(match[3]);
+      if (Number.isFinite(done) && Number.isFinite(total) && total > 0) {
+        progresses.push({ done, total });
+      }
+      match = pattern.exec(source);
+    }
+    return progresses;
+  }
+
+  function firstCompletionProgress(text) {
+    return completionProgresses(text)[0] || null;
+  }
+
+  function clickNextIncompleteCourseGroup(totalDays, dayIndex) {
+    const groups = findCourseGroups();
+    syncCourseGroupCursor(groups);
+    if (!groups.length) {
+      return {
+        clicked: false,
+        dayClicked: false,
+        groupClicked: false,
+        totalDays,
+        dayIndex,
+        buttonCount: 0,
+        totalGroups: 0,
+        incompleteGroups: 0
+      };
+    }
+    if (courseGroupCursorIndex < 0) {
+      const selectedGroupIndex = findSelectedCourseGroupIndex(groups);
+      if (selectedGroupIndex >= 0) {
+        courseGroupCursorIndex = selectedGroupIndex;
+      }
+    }
+    const incompleteGroups = groups.filter(isIncompleteCourseGroup);
+    if (courseGroupCursorIndex >= 0 && lastCourseGroupClickAt > 0 && Date.now() - lastCourseGroupClickAt < COURSE_PROBE_RETRY_DELAY) {
+      return {
+        clicked: false,
+        dayClicked: false,
+        groupClicked: false,
+        totalDays,
+        dayIndex,
+        buttonCount: 0,
+        totalGroups: groups.length,
+        incompleteGroups: incompleteGroups.length
+      };
+    }
+    const nextGroupIndex = nextIncompleteCourseGroupIndex(groups, courseGroupCursorIndex);
+    if (nextGroupIndex < 0) {
+      return {
+        clicked: false,
+        dayClicked: false,
+        groupClicked: false,
+        totalDays,
+        dayIndex,
+        buttonCount: 0,
+        totalGroups: groups.length,
+        incompleteGroups: incompleteGroups.length
+      };
+    }
+    courseGroupCursorIndex = nextGroupIndex;
+    const label = courseGroupLabel(groups[nextGroupIndex]);
+    clickCourseGroup(groups[nextGroupIndex], label);
+    return {
+      clicked: false,
+      dayClicked: false,
+      groupClicked: true,
+      totalDays,
+      dayIndex,
+      buttonCount: 0,
+      totalGroups: groups.length,
+      incompleteGroups: incompleteGroups.length,
+      groupIndex: nextGroupIndex,
+      label
+    };
+  }
+
+  function findCourseGroups() {
+    const candidates = Array.from(document.querySelectorAll("body *"))
+      .filter((element) => {
+        if (!visible(element)) {
+          return false;
+        }
+        const text = compactText(element);
+        if (text.length < 4 || text.length > 180 || isCourseDayText(text)) {
+          return false;
+        }
+        const progress = firstCompletionProgress(text);
+        if (!progress || progress.done >= progress.total) {
+          return false;
+        }
+        const rect = element.getBoundingClientRect();
+        return rect.width <= viewportWidth() * 0.95 && rect.height <= viewportHeight() * 0.45;
+      })
+      .map(courseGroupActionElement)
+      .filter((element) => {
+        if (!visible(element)) {
+          return false;
+        }
+        const text = compactText(element);
+        return !isCourseDayText(text) && isIncompleteCourseGroup(element);
+      });
+
+    return uniqueElements(candidates)
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return leftRect.top - rightRect.top || leftRect.left - rightRect.left;
+      });
+  }
+
+  function courseGroupActionElement(element) {
+    let current = element;
+    for (let depth = 0; current && current !== document.body && depth < 5; depth += 1) {
+      const text = compactText(current);
+      if (text.length > 180 || completionProgresses(text).length > 1) {
+        return element;
+      }
+      const style = window.getComputedStyle(current);
+      const className = String(current.className || "");
+      if (
+        current.matches("li, button, a, [role='tab'], [role='button'], [data-active]")
+        || style.cursor === "pointer"
+        || /(^|[-_\s])(subject|category|group|course|task|item|tab|active)([-_\s]|$)/i.test(className)
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return element;
+  }
+
+  function syncCourseGroupCursor(groups) {
+    const signature = groups.map(courseGroupSignature).join("|");
+    if (signature !== courseGroupListSignature) {
+      courseGroupListSignature = signature;
+      courseGroupCursorIndex = -1;
+      clearCourseClickState();
+    }
+  }
+
+  function courseGroupSignature(element) {
+    const rect = element.getBoundingClientRect();
+    return [
+      courseGroupLabel(element),
+      Math.round(rect.top / 8),
+      Math.round(rect.left / 8)
+    ].join("|");
+  }
+
+  function findSelectedCourseGroupIndex(groups) {
+    let selected = groups.findIndex((group) => group.getAttribute("data-active") === "true");
+    if (selected >= 0) {
+      return selected;
+    }
+    selected = groups.findIndex((group) => {
+      const className = String(group.className || "");
+      const ariaSelected = group.getAttribute("aria-selected");
+      return ariaSelected === "true" || /\b(active|selected|current|checked)\b/i.test(className);
+    });
+    return selected;
+  }
+
+  function nextIncompleteCourseGroupIndex(groups, selectedGroupIndex) {
+    const start = selectedGroupIndex >= 0 ? selectedGroupIndex + 1 : 0;
+    for (let index = start; index < groups.length; index += 1) {
+      if (isIncompleteCourseGroup(groups[index])) {
+        return index;
+      }
+    }
+    return -1;
+  }
+
+  function isIncompleteCourseGroup(element) {
+    const progress = firstCompletionProgress(compactText(element));
+    return Boolean(progress && progress.done < progress.total);
+  }
+
+  function clickCourseGroup(group, label) {
+    const now = Date.now();
+    if (now - lastCourseGroupClickAt <= 1500) {
+      return false;
+    }
+    lastCourseGroupClickAt = now;
+    clearCourseClickState();
+    const clickInfo = clickElementInfo(group);
+    requestNativeTap(clickInfo, label || courseGroupLabel(group), "courseGroup");
+    return clickInfo.clicked;
+  }
+
+  function courseGroupLabel(element) {
+    const text = compactText(element).replace(/\s+/g, " ");
+    if (text.length <= 80) {
+      return text;
+    }
+    const match = COURSE_GROUP_PROGRESS_RE.exec(text);
+    if (!match) {
+      return text.slice(0, 80);
+    }
+    const progressStart = Math.max(0, match.index - 24);
+    return text.slice(progressStart, Math.min(text.length, match.index + match[0].length + 24)).trim();
+  }
+
   function syncDayCursor(days, startIndex) {
     const signature = days.map((day) => extractDayDateLabel(day) || compactText(day).slice(0, 40)).join("|");
     if (signature !== dayListSignature) {
       dayListSignature = signature;
       dayCursorIndex = -1;
+      resetCourseGroupScanState();
       clearCourseClickState();
     }
     if (dayCursorIndex < startIndex) {
@@ -1603,6 +1867,7 @@
       return false;
     }
     lastDayClickAt = now;
+    resetCourseGroupScanState();
     clearCourseClickState();
     const label = extractDayDateLabel(day) || compactText(day).slice(0, 40);
     const clickInfo = clickElementInfo(day);
