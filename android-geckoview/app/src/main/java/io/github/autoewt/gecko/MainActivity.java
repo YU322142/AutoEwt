@@ -1,6 +1,7 @@
 package io.github.autoewt.gecko;
 
 import android.app.AlarmManager;
+import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.content.SharedPreferences;
 import android.content.Intent;
@@ -28,6 +29,7 @@ import android.widget.TextView;
 import androidx.activity.ComponentActivity;
 
 import org.json.JSONException;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.mozilla.geckoview.AllowOrDeny;
 import org.mozilla.geckoview.GeckoResult;
@@ -88,6 +90,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private String pendingChildTaskKind = "";
     private String childTaskKind = "";
     private boolean listUrlDiscoveryRunning = false;
+    private AlertDialog listUrlChoiceDialog;
     private WebExtension.Port activePort;
     private WebExtension bridgeExtension;
     private final ArrayDeque<GeckoSession> parentSessions = new ArrayDeque<>();
@@ -835,6 +838,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 .putBoolean(KEY_AUTO_FILL_LOGIN, true)
                 .putBoolean(KEY_AUTO_SUBMIT_LOGIN, true)
                 .apply();
+        if (listUrlChoiceDialog != null && listUrlChoiceDialog.isShowing()) {
+            listUrlChoiceDialog.dismiss();
+        }
         listUrlDiscoveryRunning = true;
         pendingChildTaskKind = "";
         childTaskKind = "";
@@ -870,6 +876,101 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         } catch (JSONException ignored) {
         }
         postToConnectedPorts(message);
+    }
+
+    private void sendListUrlCandidateSelection(String candidateId, String title) {
+        JSONObject message = new JSONObject();
+        try {
+            message.put("type", "selectListUrlCandidate");
+            message.put("candidateId", candidateId);
+            message.put("at", System.currentTimeMillis());
+        } catch (JSONException ignored) {
+        }
+        postToConnectedPorts(message);
+        log("URL 获取：已选择任务：" + title);
+    }
+
+    private void cancelListUrlDiscovery(String reason) {
+        listUrlDiscoveryRunning = false;
+        sendStopListUrlDiscoveryCommand();
+        log("URL 获取已取消：" + reason);
+    }
+
+    private void showListUrlCandidateDialog(JSONArray candidates) {
+        if (candidates == null || candidates.length() == 0) {
+            listUrlDiscoveryRunning = false;
+            log("URL 获取失败：没有找到可选任务");
+            return;
+        }
+        if (listUrlChoiceDialog != null && listUrlChoiceDialog.isShowing()) {
+            listUrlChoiceDialog.dismiss();
+        }
+
+        ArrayList<String> candidateIds = new ArrayList<>();
+        ArrayList<String> candidateTitles = new ArrayList<>();
+        ArrayList<String> labels = new ArrayList<>();
+        for (int i = 0; i < candidates.length(); i++) {
+            JSONObject candidate = candidates.optJSONObject(i);
+            if (candidate == null) {
+                continue;
+            }
+            String id = candidate.optString("id", "");
+            if (id.isEmpty()) {
+                continue;
+            }
+            String title = trimForDialog(candidate.optString("title", "未命名任务"), 80);
+            String status = trimForDialog(candidate.optString("status", "未完成"), 32);
+            String filter = trimForDialog(candidate.optString("filter", ""), 32);
+            String startTime = trimForDialog(candidate.optString("startTime", ""), 40);
+            String deadline = trimForDialog(candidate.optString("deadline", ""), 40);
+            String teacher = trimForDialog(candidate.optString("teacher", ""), 32);
+
+            StringBuilder label = new StringBuilder();
+            label.append(title);
+            label.append("\n状态：").append(status);
+            if (!filter.isEmpty() && !status.contains(filter)) {
+                label.append("  分类：").append(filter);
+            }
+            if (!deadline.isEmpty()) {
+                label.append("\n截止：").append(deadline);
+            }
+            if (!startTime.isEmpty()) {
+                label.append("  开始：").append(startTime);
+            }
+            if (!teacher.isEmpty()) {
+                label.append("\n布置人：").append(teacher);
+            }
+            candidateIds.add(id);
+            candidateTitles.add(title);
+            labels.add(label.toString());
+        }
+
+        if (labels.isEmpty()) {
+            listUrlDiscoveryRunning = false;
+            log("URL 获取失败：候选任务数据为空");
+            return;
+        }
+
+        String[] items = labels.toArray(new String[0]);
+        listUrlChoiceDialog = new AlertDialog.Builder(this)
+                .setTitle("选择课程列表 URL")
+                .setItems(items, (dialog, which) -> {
+                    if (which >= 0 && which < candidateIds.size()) {
+                        sendListUrlCandidateSelection(candidateIds.get(which), candidateTitles.get(which));
+                    }
+                })
+                .setNegativeButton("取消", (dialog, which) -> cancelListUrlDiscovery("用户取消选择"))
+                .create();
+        listUrlChoiceDialog.setOnCancelListener(dialog -> cancelListUrlDiscovery("用户关闭选择窗口"));
+        listUrlChoiceDialog.show();
+    }
+
+    private String trimForDialog(String value, int maxChars) {
+        String text = value == null ? "" : value.trim().replaceAll("\\s+", " ");
+        if (text.length() <= maxChars) {
+            return text;
+        }
+        return text.substring(0, Math.max(0, maxChars - 1)) + "…";
     }
 
     private void startAutomation() {
@@ -1015,6 +1116,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             return;
         }
         listUrlDiscoveryRunning = false;
+        if (listUrlChoiceDialog != null && listUrlChoiceDialog.isShowing()) {
+            listUrlChoiceDialog.dismiss();
+        }
         sendStopListUrlDiscoveryCommand();
         prefs.edit()
                 .putString(KEY_LIST_URL, url)
@@ -1399,10 +1503,16 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 restartBrowserFromAutomation(json.optString("reason", "unknown"), json.optString("url", ""));
             } else if ("listUrlDiscoveryLog".equals(type)) {
                 log("URL 获取：" + json.optString("message", ""));
+            } else if ("listUrlDiscoveryCandidates".equals(type)) {
+                log("URL 获取：请选择要保存的任务");
+                runOnUiThread(() -> showListUrlCandidateDialog(json.optJSONArray("candidates")));
             } else if ("listUrlDiscovered".equals(type)) {
                 saveDiscoveredListUrl(json.optString("url", ""), json.optString("title", ""));
             } else if ("listUrlDiscoveryFailed".equals(type)) {
                 listUrlDiscoveryRunning = false;
+                if (listUrlChoiceDialog != null && listUrlChoiceDialog.isShowing()) {
+                    listUrlChoiceDialog.dismiss();
+                }
                 log("URL 获取失败：" + json.optString("reason", "未找到可用任务"));
             } else {
                 log("扩展消息：" + json);

@@ -54,6 +54,13 @@
   let urlDiscoveryInitialOverviewUrl = "";
   let urlDiscoverySawHomeworkPage = false;
   let urlDiscoveryTargetUrl = "";
+  let urlDiscoveryCandidates = [];
+  let urlDiscoveryCandidateKeys = new Set();
+  let urlDiscoveryCandidateCounter = 0;
+  let urlDiscoveryCurrentFilter = "";
+  let urlDiscoveryWaitingForSelection = false;
+  let urlDiscoverySelectionCandidate = null;
+  let urlDiscoverySelectionRetries = 0;
   let childSessionActive = false;
   let fmEntryExitReported = false;
   let lastFmEntryUrl = "";
@@ -87,12 +94,16 @@
         } else if (message.type === "discoverListUrl") {
           config = Object.assign({}, config, message.config || {});
           if (urlDiscoveryActive) {
-            scheduleListUrlDiscovery(0);
+            if (!urlDiscoveryWaitingForSelection) {
+              scheduleListUrlDiscovery(0);
+            }
           } else {
             startListUrlDiscovery("manual", message.targetUrl || "");
           }
         } else if (message.type === "stopListUrlDiscovery") {
           stopListUrlDiscovery();
+        } else if (message.type === "selectListUrlCandidate") {
+          selectListUrlCandidate(message.candidateId);
         } else if (message.type === "automation") {
           config = Object.assign({}, config, message.config || {});
           if (message.action === "start") {
@@ -258,6 +269,13 @@
     urlDiscoveryInitialOverviewUrl = isTaskOverviewPage() ? location.href : "";
     urlDiscoverySawHomeworkPage = false;
     urlDiscoveryTargetUrl = String(targetUrl || "");
+    urlDiscoveryCandidates = [];
+    urlDiscoveryCandidateKeys = new Set();
+    urlDiscoveryCandidateCounter = 0;
+    urlDiscoveryCurrentFilter = "";
+    urlDiscoveryWaitingForSelection = false;
+    urlDiscoverySelectionCandidate = null;
+    urlDiscoverySelectionRetries = 0;
     postListUrlDiscoveryLog("开始扫描任务列表 URL", { reason });
     if (urlDiscoveryTargetUrl && urlDiscoveryInitialOverviewUrl) {
       location.href = urlDiscoveryTargetUrl;
@@ -270,6 +288,8 @@
 
   function stopListUrlDiscovery() {
     urlDiscoveryActive = false;
+    urlDiscoveryWaitingForSelection = false;
+    urlDiscoverySelectionCandidate = null;
     if (urlDiscoveryTimer) {
       clearTimeout(urlDiscoveryTimer);
       urlDiscoveryTimer = 0;
@@ -352,14 +372,21 @@
 
     hideCompletedDiscoveryTasks();
 
+    if (urlDiscoverySelectionCandidate) {
+      clickSelectedListUrlCandidate();
+      return;
+    }
+
+    if (urlDiscoveryWaitingForSelection) {
+      return;
+    }
+
     if (urlDiscoveryPendingFilter) {
-      const task = findDiscoveryTaskCandidate();
-      if (task) {
-        clickDiscoveryTask(task);
-        scheduleListUrlDiscovery(5000);
-        return;
-      }
+      urlDiscoveryCurrentFilter = urlDiscoveryPendingFilter;
+      collectDiscoveryCandidates(urlDiscoveryPendingFilter);
       urlDiscoveryPendingFilter = "";
+      scheduleListUrlDiscovery(300);
+      return;
     }
 
     if (urlDiscoveryFilterIndex < DISCOVERY_FILTERS.length) {
@@ -376,19 +403,34 @@
       return;
     }
 
-    const task = findDiscoveryTaskCandidate();
-    if (task) {
-      clickDiscoveryTask(task);
-      scheduleListUrlDiscovery(5000);
+    reportDiscoveryCandidateChoices();
+  }
+
+  function reportDiscoveryCandidateChoices() {
+    if (!urlDiscoveryCandidates.length) {
+      stopListUrlDiscovery();
+      postMessage({
+        type: "listUrlDiscoveryFailed",
+        reason: "没有找到可点击的未完成任务；已完成任务已自动隐藏",
+        timestamp: Date.now()
+      });
       return;
     }
-
-    stopListUrlDiscovery();
+    urlDiscoveryWaitingForSelection = true;
     postMessage({
-      type: "listUrlDiscoveryFailed",
-      reason: "没有找到可点击的未完成任务；已完成任务已自动隐藏",
+      type: "listUrlDiscoveryCandidates",
+      candidates: urlDiscoveryCandidates.map((candidate) => ({
+        id: candidate.id,
+        title: candidate.title,
+        status: candidate.status,
+        filter: candidate.filter,
+        startTime: candidate.startTime,
+        deadline: candidate.deadline,
+        teacher: candidate.teacher
+      })),
       timestamp: Date.now()
     });
+    postListUrlDiscoveryLog(`已找到${urlDiscoveryCandidates.length}个可选任务，等待选择`);
   }
 
   function postListUrlDiscoveryLog(message, payload) {
@@ -473,6 +515,162 @@
         return leftRect.top - rightRect.top || leftRect.left - rightRect.left;
       });
     return cards[0] || null;
+  }
+
+  function collectDiscoveryCandidates(filter) {
+    const cards = discoveryTaskCards(false)
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return leftRect.top - rightRect.top || leftRect.left - rightRect.left;
+      });
+    let added = 0;
+    cards.forEach((card) => {
+      const candidate = buildDiscoveryCandidate(card, filter);
+      if (!candidate || urlDiscoveryCandidateKeys.has(candidate.key)) {
+        return;
+      }
+      urlDiscoveryCandidateKeys.add(candidate.key);
+      urlDiscoveryCandidates.push(candidate);
+      card.setAttribute("data-autoewt-discovery-key", candidate.key);
+      added += 1;
+    });
+    postListUrlDiscoveryLog(`收集${filter || "当前页面"}任务：新增${added}个`);
+    return added;
+  }
+
+  function buildDiscoveryCandidate(card, filter) {
+    const text = compactText(card).replace(/\s+/g, " ");
+    const title = discoveryTaskTitle(card);
+    if (!title) {
+      return null;
+    }
+    const teacher = discoveryField(text, /布置人[:：]\s*([^开始截止查看去继续]+)/);
+    const startTime = discoveryField(text, /开始时间[:：]\s*([^截止查看去继续]+)/);
+    const deadline = discoveryField(text, /截止时间[:：]\s*([^查看去继续]+)/);
+    const key = [
+      title,
+      teacher,
+      startTime,
+      deadline
+    ].join("|");
+    return {
+      id: `task-${Date.now()}-${urlDiscoveryCandidateCounter++}`,
+      key,
+      title,
+      status: discoveryTaskStatus(card, filter),
+      filter: String(filter || ""),
+      startTime,
+      deadline,
+      teacher,
+      text: text.slice(0, 240)
+    };
+  }
+
+  function discoveryField(text, expression) {
+    const match = String(text || "").match(expression);
+    return match ? match[1].trim().replace(DISCOVERY_TASK_ACTION_RE, "").trim() : "";
+  }
+
+  function discoveryTaskTitle(card) {
+    const text = compactText(card).replace(/\s+/g, " ");
+    const beforeMeta = text.split(/布置人[:：]|开始时间[:：]|截止时间[:：]/)[0] || text;
+    return beforeMeta
+      .replace(DISCOVERY_TASK_ACTION_RE, "")
+      .replace(/已完成|已提交|已批改|已截止|未开始|进行中/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
+  }
+
+  function discoveryTaskStatus(card, filter) {
+    const text = compactText(card);
+    if (/已完成|已提交|已批改/.test(text)) {
+      return "已完成";
+    }
+    if (/已截止|已过期|超时/.test(text)) {
+      return "已截止（未完成）";
+    }
+    if (/未开始/.test(text)) {
+      return "未开始";
+    }
+    if (/进行中/.test(text)) {
+      return "进行中";
+    }
+    if (filter) {
+      return `${filter}（未完成）`;
+    }
+    return "未完成";
+  }
+
+  function selectListUrlCandidate(candidateId) {
+    const candidate = urlDiscoveryCandidates.find((item) => item.id === candidateId);
+    if (!candidate) {
+      postMessage({
+        type: "listUrlDiscoveryFailed",
+        reason: "选择的任务已失效，请重新自动获取 URL",
+        timestamp: Date.now()
+      });
+      stopListUrlDiscovery();
+      return;
+    }
+    urlDiscoveryWaitingForSelection = false;
+    urlDiscoverySelectionCandidate = candidate;
+    urlDiscoverySelectionRetries = 0;
+    if (candidate.filter && DISCOVERY_FILTERS.includes(candidate.filter) && candidate.filter !== urlDiscoveryCurrentFilter) {
+      if (clickDiscoveryFilter(candidate.filter)) {
+        urlDiscoveryCurrentFilter = candidate.filter;
+        postListUrlDiscoveryLog(`已切换到${candidate.filter}任务`);
+        scheduleListUrlDiscovery(3500);
+        return;
+      }
+      postListUrlDiscoveryLog(`未能切换到${candidate.filter}任务，尝试在当前页面查找`);
+    }
+    scheduleListUrlDiscovery(0);
+  }
+
+  function clickSelectedListUrlCandidate() {
+    hideCompletedDiscoveryTasks();
+    const candidate = urlDiscoverySelectionCandidate;
+    const card = findDiscoveryCardByCandidate(candidate);
+    if (card) {
+      urlDiscoverySelectionCandidate = null;
+      clickDiscoveryTask(card);
+      scheduleListUrlDiscovery(5000);
+      return;
+    }
+    urlDiscoverySelectionRetries += 1;
+    if (urlDiscoverySelectionRetries <= 5) {
+      if (candidate.filter && DISCOVERY_FILTERS.includes(candidate.filter) && candidate.filter !== urlDiscoveryCurrentFilter) {
+        clickDiscoveryFilter(candidate.filter);
+        urlDiscoveryCurrentFilter = candidate.filter;
+      }
+      postListUrlDiscoveryLog("等待所选任务出现在列表中");
+      scheduleListUrlDiscovery(1200);
+      return;
+    }
+    stopListUrlDiscovery();
+    postMessage({
+      type: "listUrlDiscoveryFailed",
+      reason: `没有在当前列表中找到所选任务：${candidate.title}`,
+      timestamp: Date.now()
+    });
+  }
+
+  function findDiscoveryCardByCandidate(candidate) {
+    if (!candidate) {
+      return null;
+    }
+    const cards = discoveryTaskCards(false);
+    const exact = cards.find((card) => {
+      const built = buildDiscoveryCandidate(card, candidate.filter);
+      return built && built.key === candidate.key;
+    });
+    if (exact) {
+      return exact;
+    }
+    const title = candidate.title || "";
+    return cards.find((card) => compactText(card).includes(title)) || null;
   }
 
   function discoveryTaskCards(completed) {
