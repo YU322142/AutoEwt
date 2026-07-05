@@ -40,7 +40,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -386,8 +385,8 @@ private fun BrowserControlColumn(
             }
         }
 
-        LinearProgressIndicator(
-            progress = { (state.loadProgress.coerceIn(0, 100) / 100f) },
+        UnifiedProgressBar(
+            progress = state.loadProgress.coerceIn(0, 100) / 100f,
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -451,10 +450,32 @@ private fun CourseDayProgressPanel(state: AutoEwtUiState) {
                 overflow = TextOverflow.Ellipsis
             )
         }
-        LinearProgressIndicator(
-            progress = { day.toFloat() / totalDays.toFloat() },
+        UnifiedProgressBar(
+            progress = day.toFloat() / totalDays.toFloat(),
             modifier = Modifier.fillMaxWidth()
         )
+    }
+}
+
+@Composable
+private fun UnifiedProgressBar(progress: Float, modifier: Modifier = Modifier) {
+    val clampedProgress = progress.coerceIn(0f, 1f)
+    val shape = RoundedCornerShape(999.dp)
+    Box(
+        modifier = modifier
+            .height(8.dp)
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f))
+    ) {
+        if (clampedProgress > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(clampedProgress)
+                    .clip(shape)
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+        }
     }
 }
 
