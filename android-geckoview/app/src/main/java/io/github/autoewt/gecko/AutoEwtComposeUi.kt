@@ -158,6 +158,7 @@ class AutoEwtUiState {
     var listUrlDiscoveryMessage by mutableStateOf("")
     var listUrlChoiceVisible by mutableStateOf(false)
     var listUrlCandidates by mutableStateOf<List<AutoEwtListUrlCandidate>>(emptyList())
+    var listUrlManualEntryVisible by mutableStateOf(false)
 
     fun showListUrlCandidates(candidates: List<AutoEwtListUrlCandidate>) {
         listUrlCandidates = candidates
@@ -1019,7 +1020,7 @@ private fun ListUrlCandidateDialog(controller: AutoEwtUiController) {
 @Composable
 private fun OobeScreen(controller: AutoEwtUiController, onHelpClick: () -> Unit) {
     val state = controller.state
-    val titles = listOf("欢迎", "后台运行", "账号与课程", "运行方式", "准备启动")
+    val titles = listOf("欢迎", "后台运行", "账号与课程", "准备启动")
     var step by remember { mutableIntStateOf(0) }
     var stepHelpVisible by remember { mutableStateOf(false) }
     val lastStep = titles.lastIndex
@@ -1078,7 +1079,6 @@ private fun OobeScreen(controller: AutoEwtUiController, onHelpClick: () -> Unit)
                     0 -> OobeWelcomeStep()
                     1 -> OobeBackgroundStep(controller)
                     2 -> OobeAccountStep(controller)
-                    3 -> OobeModeStep(controller)
                     else -> OobeReadyStep(controller)
                 }
             }
@@ -1099,7 +1099,7 @@ private fun OobeScreen(controller: AutoEwtUiController, onHelpClick: () -> Unit)
             if (step < lastStep) {
                 Button(
                     onClick = {
-                        if (step == 2 || step == 3) {
+                        if (step == 2) {
                             controller.saveConfigFromUi()
                         }
                         step += 1
@@ -1146,15 +1146,11 @@ private fun OobeStepHelpDialog(
             "它不是无限制后台运行。请不要从最近任务划掉应用；部分系统还需要在系统设置里允许后台活动或关闭电池优化。"
         )
         2 -> listOf(
-            "课程列表 URL 可以手动粘贴，也可以先填写账号密码，再点“登录后自动获取课程列表 URL”。",
-            "自动获取会打开作业页，登录后列出可选任务。验证码或短信验证需要你在浏览器里手动完成。"
-        )
-        3 -> listOf(
-            "刷课模式会进入课程任务，处理视频、FM、检查点、暂停提示以及漏看检查点后的重刷入口。",
-            "做题模式会按做题入口运行，report_id 不确定时可以先留空。桌面浏览器模式通常最接近电脑端表现。"
+            "填写账号和密码后，优先使用“自动获取并选择任务”。应用会打开作业页，登录后列出可选任务。",
+            "自动获取失败时才会显示手动 URL 输入框；验证码或短信验证需要你在浏览器里手动完成。"
         )
         else -> listOf(
-            "“保存进入主界面”只保存配置；“保存并打开课程”会进入课程列表；“开始运行”会保存并立刻启动自动化。",
+            "“保存进入主界面”只保存配置；“保存并打开课程”会进入已选择任务；“开始运行”会保存并立刻启动自动化。",
             "启动后可以隐藏浏览器或日志，隐藏浏览器不会暂停自动化。"
         )
     }
@@ -1192,8 +1188,8 @@ private fun OobeWelcomeStep() {
     HelpParagraph("本项目用于浏览器自动化与跨平台客户端技术研究。请遵守学校纪律、平台规则和法律法规。")
     HelpSectionTitle("接下来会做什么")
     OobeStep("1", "确认后台运行方式，避免息屏或退到后台后任务过早停止。")
-    OobeStep("2", "填写账号、密码和课程列表 URL，或稍后通过自动获取 URL 来选择任务。")
-    OobeStep("3", "选择刷课或做题，保留默认桌面浏览器模式以贴近电脑端页面。")
+    OobeStep("2", "填写账号和密码，然后自动获取并选择要刷的任务。")
+    OobeStep("3", "保存后进入主界面；刷完一个任务后，可以重新自动获取并选择下一个任务。")
 }
 
 @Composable
@@ -1241,90 +1237,84 @@ private fun OobeAccountStep(controller: AutoEwtUiController) {
         visualTransformation = PasswordVisualTransformation(),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
     )
-    HelpSectionTitle("课程列表 URL")
-    OutlinedTextField(
-        value = state.listUrl,
-        onValueChange = { state.listUrl = it },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-        label = { Text("课程列表 URL") },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
-    )
+    HelpSectionTitle("课程任务")
+    CourseListUrlSelection(controller)
+    HelpParagraph("如果出现验证码或短信验证，需要在浏览器页面中手动完成。应用不会绕过验证。")
+}
+
+@Composable
+private fun CourseListUrlSelection(controller: AutoEwtUiController) {
+    val state = controller.state
+    if (state.listUrl.isNotBlank() && !state.listUrlManualEntryVisible) {
+        SelectedListUrlStatus(state.listUrl)
+    }
     Button(
-        onClick = {
-            controller.saveConfigFromUi()
-            controller.discoverListUrlFromUi()
-        },
+        onClick = controller::discoverListUrlFromUi,
+        enabled = !state.listUrlDiscoveryRunning,
         modifier = Modifier.fillMaxWidth(),
         contentPadding = ButtonDefaults.ButtonWithIconContentPadding
     ) {
         ActionIcon(R.drawable.ic_probe)
         Spacer(Modifier.width(6.dp))
-        Text("登录后自动获取课程列表 URL")
+        Text(if (state.listUrl.isBlank()) "自动获取并选择任务" else "重新自动获取并选择任务")
     }
-    HelpParagraph("如果出现验证码或短信验证，需要在浏览器页面中手动完成。应用不会绕过验证。")
+    if (state.listUrlDiscoveryRunning) {
+        OobeStatusLine(state.listUrlDiscoveryMessage.ifBlank { "正在获取课程列表 URL" })
+    } else {
+        HelpParagraph("刷完一个任务后，可以回到这里重新自动获取并选择下一个任务。已完成任务会自动隐藏，已截止但未完成的任务仍可选择。")
+    }
+    AnimatedVisibility(visible = state.listUrlManualEntryVisible) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            ManualListUrlFallbackField(state)
+        }
+    }
 }
 
 @Composable
-private fun OobeModeStep(controller: AutoEwtUiController) {
-    val state = controller.state
-    HelpSectionTitle("运行模式")
-    FlowRow(
+private fun SelectedListUrlStatus(listUrl: String) {
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+        contentColor = MaterialTheme.colorScheme.primary
     ) {
-        FilterChip(
-            selected = state.mode == "video",
-            onClick = { state.mode = "video" },
-            label = { Text("刷课") },
-            leadingIcon = { ActionIcon(R.drawable.ic_play) }
-        )
-        FilterChip(
-            selected = state.mode == "paper",
-            onClick = { state.mode = "paper" },
-            label = { Text("做题") },
-            leadingIcon = { ActionIcon(R.drawable.ic_course) }
-        )
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ActionIcon(R.drawable.ic_course, size = 17.dp)
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "已选择任务链接",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = listUrl,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
+}
+
+@Composable
+private fun ManualListUrlFallbackField(state: AutoEwtUiState) {
+    WarningBox("自动获取失败时才需要手动填写。这里对应 README / config.yml 里的 list_url。")
     OutlinedTextField(
-        value = state.dayToStartOn,
-        onValueChange = { state.dayToStartOn = it.filter(Char::isDigit) },
+        value = state.listUrl,
+        onValueChange = { state.listUrl = it },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
-        label = { Text("从第几天开始") },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        label = { Text("手动填写 list_url") },
+        placeholder = { Text("粘贴课程列表或任务详情链接") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
     )
-    CheckRow(
-        checked = state.autoFillLogin,
-        onCheckedChange = { state.autoFillLogin = it },
-        text = "进入登录页后自动填入账号密码"
-    )
-    CheckRow(
-        checked = state.autoSubmitLogin,
-        onCheckedChange = { state.autoSubmitLogin = it },
-        text = "填入后自动点击登录按钮"
-    )
-    CheckRow(
-        checked = state.desktopMode,
-        onCheckedChange = { state.desktopMode = it },
-        text = "使用桌面浏览器模式"
-    )
-    if (state.mode == "paper") {
-        OutlinedTextField(
-            value = state.reportId,
-            onValueChange = { state.reportId = it },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("report_id，可先留空") }
-        )
-        CheckRow(
-            checked = state.chooseCorrectly,
-            onCheckedChange = { state.chooseCorrectly = it },
-            text = "做题时选择正确答案"
-        )
-    }
-    WarningBox("除非页面显示异常，建议保留桌面浏览器模式。切换后会重启 GeckoView 以应用 UA/viewport。")
+    HelpParagraph("README 中的 list_url 是课程列表页面的链接；Android 自动获取成功时会保存具体任务链接，通常包含 student-task-overview 和 homeworkId=。")
+    HelpParagraph("手动兜底时优先粘贴同类任务详情链接，保存后可打开课程或开始运行；如果验证码或短信验证出现，请在浏览器页面内手动完成。")
 }
 
 @Composable
@@ -1475,7 +1465,7 @@ private fun IconHelpDialog(onDismiss: () -> Unit) {
             ) {
                 item {
                     HelpSectionTitle("基本流程")
-                    HelpParagraph("先到配置页填写账号、密码和课程列表 URL；也可以使用“自动获取课程列表 URL”登录后选择具体任务。")
+                    HelpParagraph("先到配置页填写账号和密码，再使用“自动获取并选择任务”登录后选择具体任务。自动获取失败时才会显示手动 list_url 输入框。")
                     HelpParagraph("高级设置里可切换刷课/做题、起始天数、自动登录、桌面浏览器模式等。默认桌面浏览器模式更接近电脑端页面。")
                 }
                 item {
@@ -1676,14 +1666,8 @@ private fun ConfigIdentityPanel(controller: AutoEwtUiController, modifier: Modif
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
         )
-        OutlinedTextField(
-            value = state.listUrl,
-            onValueChange = { state.listUrl = it },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("课程列表 URL") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
-        )
+        SectionTitle("课程任务")
+        CourseListUrlSelection(controller)
         FlowRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1695,15 +1679,6 @@ private fun ConfigIdentityPanel(controller: AutoEwtUiController, modifier: Modif
             OutlinedButton(onClick = controller::saveAndOpenFromUi) {
                 Text("保存并打开")
             }
-        }
-        Button(
-            onClick = controller::discoverListUrlFromUi,
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = ButtonDefaults.ButtonWithIconContentPadding
-        ) {
-            ActionIcon(R.drawable.ic_probe)
-            Spacer(Modifier.width(6.dp))
-            Text("自动获取课程列表 URL")
         }
     }
 }

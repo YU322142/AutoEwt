@@ -907,6 +907,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 .putBoolean(KEY_AUTO_SUBMIT_LOGIN, true)
                 .apply();
         listUrlDiscoveryRunning = true;
+        setListUrlManualEntryVisible(false);
         setListUrlDiscoveryUi(true, "正在打开任务页");
         pendingChildTaskKind = "";
         childTaskKind = "";
@@ -950,6 +951,12 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         }
     }
 
+    private void setListUrlManualEntryVisible(boolean visible) {
+        if (uiState != null) {
+            uiState.setListUrlManualEntryVisible(visible);
+        }
+    }
+
     private void sendListUrlCandidateSelection(String candidateId, String title) {
         JSONObject message = new JSONObject();
         try {
@@ -974,6 +981,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         if (candidates == null || candidates.length() == 0) {
             listUrlDiscoveryRunning = false;
             setListUrlDiscoveryUi(false, "");
+            setListUrlManualEntryVisible(true);
             log("URL 获取失败：没有找到可选任务");
             return;
         }
@@ -1009,6 +1017,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         if (candidateItems.isEmpty()) {
             listUrlDiscoveryRunning = false;
             setListUrlDiscoveryUi(false, "");
+            setListUrlManualEntryVisible(true);
             log("URL 获取失败：候选任务数据为空");
             return;
         }
@@ -1300,11 +1309,16 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private void saveDiscoveredListUrl(String rawUrl, String title) {
         String url = normalizeOptionalUrl(rawUrl);
         if (!isDiscoveredListUrl(url)) {
+            listUrlDiscoveryRunning = false;
+            setListUrlDiscoveryUi(false, "");
+            setListUrlManualEntryVisible(true);
+            sendStopListUrlDiscoveryCommand();
             log("URL 获取结果无效：" + rawUrl);
             return;
         }
         listUrlDiscoveryRunning = false;
         setListUrlDiscoveryUi(false, "");
+        setListUrlManualEntryVisible(false);
         sendStopListUrlDiscoveryCommand();
         prefs.edit()
                 .putString(KEY_LIST_URL, url)
@@ -1719,6 +1733,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             } else if ("listUrlDiscoveryFailed".equals(type)) {
                 listUrlDiscoveryRunning = false;
                 setListUrlDiscoveryUi(false, "");
+                setListUrlManualEntryVisible(true);
                 log("URL 获取失败：" + json.optString("reason", "未找到可用任务"));
             } else {
                 log("扩展消息：" + json);
