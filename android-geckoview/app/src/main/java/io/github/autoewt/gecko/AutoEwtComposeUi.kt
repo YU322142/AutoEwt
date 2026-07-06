@@ -730,6 +730,18 @@ private fun BrowserActionButtons(
     addressExpanded: Boolean,
     onToggleAddress: () -> Unit
 ) {
+    var toolsExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(addressExpanded) {
+        if (addressExpanded) {
+            toolsExpanded = true
+        }
+    }
+    fun toggleTools() {
+        if (toolsExpanded && addressExpanded) {
+            onToggleAddress()
+        }
+        toolsExpanded = !toolsExpanded
+    }
     val actions = mutableListOf<ControlButtonSpec>()
     if (state.listUrlDiscoveryRunning) {
         actions.add(
@@ -755,27 +767,49 @@ private fun BrowserActionButtons(
         ControlButtonGrid(actions = actions, minCellWidth = DashboardButtonMinWidth)
         return
     }
-    actions.add(
-        ControlButtonSpec(
-            icon = R.drawable.ic_link,
-            text = "地址",
-            selected = addressExpanded,
-            onClick = onToggleAddress
-        )
+    ControlButtonGrid(
+        actions = listOf(
+            ControlButtonSpec(
+                icon = R.drawable.ic_play,
+                text = "开始刷课",
+                primary = true,
+                onClick = controller::startAutomationFromUi
+            )
+        ),
+        minCellWidth = DashboardButtonMinWidth
     )
-    actions.add(ControlButtonSpec(R.drawable.ic_course, "打开课程", onClick = controller::openConfiguredCourseFromUi))
-    actions.add(
-        ControlButtonSpec(
-            icon = R.drawable.ic_play,
-            text = "开始刷课",
-            primary = true,
-            onClick = controller::startAutomationFromUi
-        )
+    ControlButtonGrid(
+        actions = listOf(
+            ControlButtonSpec(
+                icon = if (toolsExpanded) R.drawable.ic_arrow_up else R.drawable.ic_arrow_down,
+                text = if (toolsExpanded) "收起工具" else "展开工具",
+                selected = toolsExpanded,
+                onClick = ::toggleTools
+            )
+        ),
+        minCellWidth = DashboardButtonMinWidth
     )
-    actions.add(ControlButtonSpec(R.drawable.ic_restart, "重启", onClick = controller::restartSessionFromUi))
-    actions.add(ControlButtonSpec(R.drawable.ic_login, "填登录", onClick = controller::requestFillLoginFromUi))
-    actions.add(ControlButtonSpec(R.drawable.ic_probe, "探测", onClick = controller::requestProbeFromUi))
-    ControlButtonGrid(actions = actions, minCellWidth = DashboardButtonMinWidth)
+    AnimatedVisibility(
+        visible = toolsExpanded,
+        enter = fadeIn() + slideInVertically(initialOffsetY = { -it / 3 }),
+        exit = fadeOut() + slideOutVertically(targetOffsetY = { -it / 3 })
+    ) {
+        ControlButtonGrid(
+            actions = listOf(
+                ControlButtonSpec(
+                    icon = R.drawable.ic_link,
+                    text = "地址",
+                    selected = addressExpanded,
+                    onClick = onToggleAddress
+                ),
+                ControlButtonSpec(R.drawable.ic_course, "打开课程", onClick = controller::openConfiguredCourseFromUi),
+                ControlButtonSpec(R.drawable.ic_restart, "重启", onClick = controller::restartSessionFromUi),
+                ControlButtonSpec(R.drawable.ic_login, "填登录", onClick = controller::requestFillLoginFromUi),
+                ControlButtonSpec(R.drawable.ic_probe, "探测", onClick = controller::requestProbeFromUi)
+            ),
+            minCellWidth = DashboardButtonMinWidth
+        )
+    }
 }
 
 @Composable

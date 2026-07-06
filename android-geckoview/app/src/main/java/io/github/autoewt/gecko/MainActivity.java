@@ -2013,7 +2013,11 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                         + " 提交=" + submitted + " 验证码=" + captcha
                         + (loginError.isEmpty() ? "" : " 错误=" + loginError));
                 if (!loginError.isEmpty()) {
-                    prefs.edit().putBoolean(KEY_AUTOMATION_RUNNING, false).apply();
+                    prefs.edit()
+                            .putBoolean(KEY_AUTOMATION_RUNNING, false)
+                            .putBoolean(KEY_AUTO_FILL_LOGIN, false)
+                            .putBoolean(KEY_AUTO_SUBMIT_LOGIN, false)
+                            .apply();
                     listUrlDiscoveryRunning = false;
                     listUrlCandidateSelectionPending = false;
                     String loginFailure = cleanLoginFailureMessage(loginError);
@@ -2022,8 +2026,11 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                     if (uiState != null) {
                         uiState.setOobeStep(2);
                         uiState.setStatus(loginFailure);
+                        uiState.setAutoFillLogin(false);
+                        uiState.setAutoSubmitLogin(false);
                     }
                     updateAutomationButtons();
+                    sendConfigToPage(false);
                     restoreOobeAfterListUrlDiscoveryIfNeeded(false);
                     requestCredentialBrowserDataReset(loginFailure);
                 }
