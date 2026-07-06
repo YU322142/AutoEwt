@@ -41,6 +41,7 @@ import org.mozilla.geckoview.GeckoRuntimeSettings;
 import org.mozilla.geckoview.GeckoSession;
 import org.mozilla.geckoview.GeckoSessionSettings;
 import org.mozilla.geckoview.GeckoView;
+import org.mozilla.geckoview.StorageController;
 import org.mozilla.geckoview.WebExtension;
 
 import java.text.SimpleDateFormat;
@@ -67,6 +68,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private static final String KEY_BACKGROUND_KEEP_ALIVE = "background_keep_alive";
     private static final String KEY_OOBE_DONE = "oobe_done";
     private static final String KEY_NOTIFICATION_PERMISSION_REQUESTED = "notification_permission_requested";
+    private static final String KEY_CREDENTIAL_BROWSER_DATA_RESET_NEEDED = "credential_browser_data_reset_needed";
 
     private static final String MODE_VIDEO = "video";
     private static final String DEFAULT_URL = "https://teacher.ewt360.com/";
@@ -74,6 +76,10 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private static final String EXTENSION_URI = "resource://android/assets/autoewt/";
     private static final String EXTENSION_ID = "autoewt-geckoview@local";
     private static final int REQUEST_POST_NOTIFICATIONS = 41;
+    private static final long CREDENTIAL_BROWSER_DATA_FLAGS =
+            StorageController.ClearFlags.SITE_DATA
+                    | StorageController.ClearFlags.ALL_CACHES
+                    | StorageController.ClearFlags.AUTH_SESSIONS;
     private static GeckoRuntime sharedRuntime;
 
     private GeckoRuntime runtime;
@@ -100,9 +106,12 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private String pendingListUrlTitle = "";
     private boolean listUrlDiscoveryRunning = false;
     private boolean listUrlCandidateSelectionPending = false;
+    private boolean credentialBrowserDataResetNeeded = false;
+    private boolean credentialBrowserDataResetRunning = false;
     private WebExtension.Port activePort;
     private WebExtension bridgeExtension;
     private final ArrayDeque<GeckoSession> parentSessions = new ArrayDeque<>();
+    private final ArrayDeque<Runnable> credentialBrowserDataResetContinuations = new ArrayDeque<>();
     private final ArrayList<WebExtension.Port> connectedPorts = new ArrayList<>();
     private final StringBuilder logBuffer = new StringBuilder();
     private long lastAutomationRestartAt = 0L;
@@ -136,6 +145,10 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         if (lastUrl == null || lastUrl.trim().isEmpty()) {
             lastUrl = DEFAULT_URL;
         }
+        credentialBrowserDataResetNeeded = prefs.getBoolean(KEY_CREDENTIAL_BROWSER_DATA_RESET_NEEDED, false);
+        if (credentialBrowserDataResetNeeded) {
+            lastUrl = DEFAULT_URL;
+        }
 
         createLayout();
         loadConfigIntoForm();
@@ -146,7 +159,11 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         updateAutomationButtons();
         syncOobeState();
         syncBackgroundKeepAlive();
-        load(lastUrl);
+        if (credentialBrowserDataResetNeeded) {
+            startCredentialBrowserDataReset("上次账号状态变更尚未完成清理");
+        } else {
+            load(lastUrl);
+        }
     }
 
     private void installCrashGuard() {
@@ -634,6 +651,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     @Override
     public void openConfiguredCourseFromUi() {
         saveConfigFromForm(true);
+        if (waitForCredentialBrowserDataReset(this::openConfiguredCourseFromUi)) {
+            return;
+        }
         showBrowserPage();
         openConfiguredCourse();
     }
@@ -642,6 +662,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     public void discoverListUrlFromUi() {
         saveConfigFromForm(true);
         if (!validateCredentialsForDiscovery()) {
+            return;
+        }
+        if (waitForCredentialBrowserDataReset(this::discoverListUrlFromUi)) {
             return;
         }
         showBrowserForListUrlDiscovery();
@@ -677,6 +700,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     @Override
     public void startAutomationFromUi() {
         saveConfigFromForm(true);
+        if (waitForCredentialBrowserDataReset(this::startAutomationFromUi)) {
+            return;
+        }
         startAutomation();
     }
 
@@ -688,6 +714,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     @Override
     public void requestFillLoginFromUi() {
         saveConfigFromForm(true);
+        if (waitForCredentialBrowserDataReset(this::requestFillLoginFromUi)) {
+            return;
+        }
         requestFillLogin();
     }
 
@@ -709,6 +738,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     @Override
     public void saveAndOpenFromUi() {
         saveConfigFromForm(false);
+        if (waitForCredentialBrowserDataReset(this::saveAndOpenFromUi)) {
+            return;
+        }
         showBrowserPage();
         openConfiguredCourse();
     }
@@ -836,6 +868,81 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         session = buildSession();
         session.open(runtime);
         geckoView.setSession(session);
+    }
+
+    private boolean waitForCredentialBrowserDataReset(Runnable continuation) {
+        if (!credentialBrowserDataResetNeeded && !credentialBrowserDataResetRunning) {
+            return false;
+        }
+        if (continuation != null) {
+            credentialBrowserDataResetContinuations.add(continuation);
+        }
+        startCredentialBrowserDataReset("账号状态已变化，需要重新登录");
+        return true;
+    }
+
+    private void requestCredentialBrowserDataReset(String reason) {
+        credentialBrowserDataResetNeeded = true;
+        prefs.edit().putBoolean(KEY_CREDENTIAL_BROWSER_DATA_RESET_NEEDED, true).apply();
+        startCredentialBrowserDataReset(reason);
+    }
+
+    private void startCredentialBrowserDataReset(String reason) {
+        if (credentialBrowserDataResetRunning) {
+            return;
+        }
+        if (runtime == null) {
+            credentialBrowserDataResetNeeded = true;
+            prefs.edit().putBoolean(KEY_CREDENTIAL_BROWSER_DATA_RESET_NEEDED, true).apply();
+            return;
+        }
+        credentialBrowserDataResetRunning = true;
+        credentialBrowserDataResetNeeded = true;
+        closeAllChildSessions("credentialReset");
+        log("正在清空浏览器登录数据：" + reason);
+        runtime.getStorageController()
+                .clearDataFromBaseDomain("ewt360.com", CREDENTIAL_BROWSER_DATA_FLAGS)
+                .accept(
+                        value -> onCredentialBrowserDataResetFinished(reason, null),
+                        throwable -> clearAllCredentialBrowserData(reason, throwable)
+                );
+    }
+
+    private void clearAllCredentialBrowserData(String reason, Throwable firstError) {
+        log("按域名清理浏览器数据失败，改为清空全部登录数据：" + firstError);
+        runtime.getStorageController()
+                .clearData(CREDENTIAL_BROWSER_DATA_FLAGS)
+                .accept(
+                        value -> onCredentialBrowserDataResetFinished(reason, null),
+                        throwable -> onCredentialBrowserDataResetFinished(reason, throwable)
+                );
+    }
+
+    private void onCredentialBrowserDataResetFinished(String reason, Throwable error) {
+        runOnUiThread(() -> {
+            credentialBrowserDataResetRunning = false;
+            credentialBrowserDataResetNeeded = false;
+            lastUrl = DEFAULT_URL;
+            prefs.edit()
+                    .putBoolean(KEY_CREDENTIAL_BROWSER_DATA_RESET_NEEDED, false)
+                    .putString(KEY_LAST_URL, DEFAULT_URL)
+                    .apply();
+            setUrlText(DEFAULT_URL);
+            if (error == null) {
+                log("浏览器登录数据已清空，请使用当前账号重新登录");
+            } else {
+                log("浏览器登录数据清理失败，仍将重建浏览器会话：" + error);
+            }
+            restartSession();
+            ArrayDeque<Runnable> continuations = new ArrayDeque<>(credentialBrowserDataResetContinuations);
+            credentialBrowserDataResetContinuations.clear();
+            while (!continuations.isEmpty()) {
+                Runnable action = continuations.poll();
+                if (action != null) {
+                    action.run();
+                }
+            }
+        });
     }
 
     private GeckoSession buildSession() {
@@ -980,6 +1087,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     }
 
     private void openConfiguredCourse() {
+        if (waitForCredentialBrowserDataReset(this::openConfiguredCourse)) {
+            return;
+        }
         String url = configuredListUrl();
         if (url.isEmpty()) {
             log("还没有配置课程列表 URL，请先到配置页填写");
@@ -1022,6 +1132,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     }
 
     private void startListUrlDiscovery() {
+        if (waitForCredentialBrowserDataReset(this::startListUrlDiscovery)) {
+            return;
+        }
         String username = prefs.getString(KEY_USERNAME, "");
         String password = prefs.getString(KEY_PASSWORD, "");
         if (username.trim().isEmpty() || password.isEmpty()) {
@@ -1213,6 +1326,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     }
 
     private void startAutomation() {
+        if (waitForCredentialBrowserDataReset(this::startAutomation)) {
+            return;
+        }
         String listUrl = configuredListUrl();
         String username = prefs.getString(KEY_USERNAME, "");
         String password = prefs.getString(KEY_PASSWORD, "");
@@ -1592,6 +1708,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
 
     private void saveConfigFromForm(boolean silent) {
         boolean desktopModeBefore = prefs.getBoolean(KEY_DESKTOP_MODE, true);
+        String previousUsername = prefs.getString(KEY_USERNAME, "");
+        String previousPassword = prefs.getString(KEY_PASSWORD, "");
         String previousListUrl = prefs.getString(KEY_LIST_URL, "");
         String previousListUrlTitle = prefs.getString(KEY_LIST_URL_TITLE, "");
         String username;
@@ -1630,7 +1748,13 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             desktopMode = desktopModeCheck.isChecked();
             backgroundKeepAlive = backgroundKeepAliveCheck == null || backgroundKeepAliveCheck.isChecked();
         }
+        boolean usernameChanged = !previousUsername.trim().equals(username.trim());
+        boolean credentialsChanged = usernameChanged || !previousPassword.equals(password);
         String listUrlTitle = listUrl.equals(previousListUrl) ? previousListUrlTitle : "";
+        if (usernameChanged) {
+            listUrl = "";
+            listUrlTitle = "";
+        }
 
         prefs.edit()
                 .putString(KEY_USERNAME, username)
@@ -1648,6 +1772,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 .apply();
 
         if (uiState != null) {
+            uiState.setUsername(username);
+            uiState.setPassword(password);
             uiState.setListUrl(listUrl);
             uiState.setListUrlTitle(listUrlTitle);
             uiState.setMode(mode);
@@ -1655,6 +1781,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             uiState.setBackgroundKeepAlive(backgroundKeepAlive);
         }
         if (listUrlInput != null) {
+            usernameInput.setText(username);
+            passwordInput.setText(password);
             listUrlInput.setText(listUrl);
             dayInput.setText(String.valueOf(dayToStartOn));
         }
@@ -1663,6 +1791,16 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         sendConfigToPage(!silent);
         if (!silent) {
             log("配置已保存：模式=刷课");
+        }
+        if (credentialsChanged) {
+            String reason = usernameChanged
+                    ? "账号已更改，旧课程链接和登录态已失效"
+                    : "密码已更改，需要重新登录";
+            if (uiState != null) {
+                uiState.setStatus(usernameChanged ? "账号已更改，请重新自动获取并选择任务" : "密码已更改，请重新登录");
+            }
+            log(reason);
+            requestCredentialBrowserDataReset(reason);
         }
         if (desktopModeBefore != desktopMode) {
             log("浏览器模式已变更，正在重启内核以应用 UA/viewport 设置");
@@ -1887,6 +2025,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                     }
                     updateAutomationButtons();
                     restoreOobeAfterListUrlDiscoveryIfNeeded(false);
+                    requestCredentialBrowserDataReset(loginFailure);
                 }
             } else if ("automationLog".equals(type)) {
                 String messageText = json.optString("message", "");
