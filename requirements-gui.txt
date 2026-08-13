@@ -1,2 +1,4 @@
 -r requirements.txt
 pyside6-fluent-widgets~=1.11.2
+pywin32>=311; platform_system == "Windows"
+openpyxl~=3.1.5

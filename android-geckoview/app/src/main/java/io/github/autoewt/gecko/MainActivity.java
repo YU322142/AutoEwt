@@ -73,6 +73,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private static final String MODE_VIDEO = "video";
     private static final String DEFAULT_URL = "https://teacher.ewt360.com/";
     private static final String HOMEWORK_DISCOVERY_URL = "https://teacher.ewt360.com/ewtbend/bend/index/index.html#/student/homework";
+    private static final String HOLIDAY_DISCOVERY_URL = "https://teacher.ewt360.com/ewtbend/bend/index/index.html#/holiday/student/home";
     private static final String EXTENSION_URI = "resource://android/assets/autoewt/";
     private static final String EXTENSION_ID = "autoewt-geckoview@local";
     private static final int REQUEST_POST_NOTIFICATIONS = 41;
@@ -103,6 +104,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private String lastUrl = DEFAULT_URL;
     private String pendingChildTaskKind = "";
     private String childTaskKind = "";
+    private String pendingChildCourseSignature = "";
+    private String childCourseSignature = "";
     private String pendingListUrlTitle = "";
     private boolean listUrlDiscoveryRunning = false;
     private boolean listUrlCandidateSelectionPending = false;
@@ -127,7 +130,6 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     private RadioGroup modeGroup;
     private RadioButton videoModeButton;
     private RadioButton paperModeButton;
-    private EditText dayInput;
     private CheckBox chooseCorrectlyCheck;
     private EditText reportIdInput;
     private CheckBox autoFillLoginCheck;
@@ -439,7 +441,6 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         );
         listUrlInput = addEditRow(form, "课程列表 URL", "README 中的 list_url，保存后可直接打开", false, InputType.TYPE_TEXT_VARIATION_URI);
 
-        dayInput = addEditRow(form, "从第几天开始", "默认 1", false, InputType.TYPE_CLASS_NUMBER);
         chooseCorrectlyCheck = new CheckBox(this);
         reportIdInput = new EditText(this);
 
@@ -774,6 +775,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         pendingListUrlTitle = "";
         pendingChildTaskKind = "";
         childTaskKind = "";
+        pendingChildCourseSignature = "";
+        childCourseSignature = "";
         lastAutomationRestartAt = 0L;
         logMode = LOG_MODE_SINGLE;
         lastUrl = DEFAULT_URL;
@@ -1007,6 +1010,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 parentSessions.push(MainActivity.this.session);
                 childTaskKind = pendingChildTaskKind;
                 pendingChildTaskKind = "";
+                childCourseSignature = pendingChildCourseSignature;
+                pendingChildCourseSignature = "";
                 notifyChildSessionOpened(uri);
                 MainActivity.this.session = childSession;
                 activePort = null;
@@ -1160,6 +1165,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         setListUrlDiscoveryUi(true, "正在打开任务页");
         pendingChildTaskKind = "";
         childTaskKind = "";
+        pendingChildCourseSignature = "";
+        childCourseSignature = "";
         updateAutomationButtons();
         closeAllChildSessions("discoverListUrl");
         boolean keepInOobe = returnToOobeAfterListUrlDiscovery && uiState != null && uiState.getOobeVisible();
@@ -1169,7 +1176,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         } else {
             uiState.setOobeStep(2);
         }
-        log("开始自动获取课程列表 URL：将隐藏已完成任务，并扫描进行中、未开始、已截止任务");
+        log("开始自动获取课程列表 URL：扫描普通任务和暑假任务，并隐藏已完成任务");
         load(HOMEWORK_DISCOVERY_URL);
         if (geckoView != null) {
             geckoView.postDelayed(this::sendListUrlDiscoveryCommand, 500);
@@ -1186,6 +1193,10 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         try {
             message.put("type", "discoverListUrl");
             message.put("targetUrl", HOMEWORK_DISCOVERY_URL);
+            JSONArray targetUrls = new JSONArray();
+            targetUrls.put(HOMEWORK_DISCOVERY_URL);
+            targetUrls.put(HOLIDAY_DISCOVERY_URL);
+            message.put("targetUrls", targetUrls);
             message.put("config", buildConfigJson());
             message.put("at", System.currentTimeMillis());
         } catch (JSONException ignored) {
@@ -1344,6 +1355,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 .apply();
         pendingChildTaskKind = "";
         childTaskKind = "";
+        pendingChildCourseSignature = "";
+        childCourseSignature = "";
         listUrlDiscoveryRunning = false;
         if (uiState != null) {
             uiState.clearAutomationProgress();
@@ -1369,6 +1382,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         prefs.edit().putBoolean(KEY_AUTOMATION_RUNNING, false).apply();
         pendingChildTaskKind = "";
         childTaskKind = "";
+        pendingChildCourseSignature = "";
+        childCourseSignature = "";
         listUrlDiscoveryRunning = false;
         if (uiState != null) {
             uiState.clearAutomationProgress();
@@ -1580,6 +1595,8 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         connectedPorts.clear();
         pendingChildTaskKind = "";
         childTaskKind = "";
+        pendingChildCourseSignature = "";
+        childCourseSignature = "";
         createSession();
         installBridge();
         load(lastUrl);
@@ -1661,7 +1678,9 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         String listUrl = prefs.getString(KEY_LIST_URL, "");
         String listUrlTitle = prefs.getString(KEY_LIST_URL_TITLE, "");
         String mode = MODE_VIDEO;
-        int dayToStartOn = prefs.getInt(KEY_DAY_TO_START_ON, 1);
+        // A scan always starts at day one. Keep the preference key for backwards
+        // compatibility with older installs, but never honor a stale value.
+        int dayToStartOn = 1;
         boolean chooseCorrectly = true;
         String reportId = "";
         boolean autoFillLogin = prefs.getBoolean(KEY_AUTO_FILL_LOGIN, true);
@@ -1695,7 +1714,6 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         if (paperModeButton != null) {
             paperModeButton.setChecked(false);
         }
-        dayInput.setText(String.valueOf(dayToStartOn));
         chooseCorrectlyCheck.setChecked(chooseCorrectly);
         reportIdInput.setText(reportId);
         autoFillLoginCheck.setChecked(autoFillLogin);
@@ -1716,7 +1734,6 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         String password;
         String listUrl;
         String mode;
-        int dayToStartOn;
         boolean chooseCorrectly;
         String reportId;
         boolean autoFillLogin;
@@ -1728,7 +1745,6 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             password = uiState.getPassword();
             listUrl = normalizeOptionalUrl(uiState.getListUrl());
             mode = MODE_VIDEO;
-            dayToStartOn = parsePositiveInt(uiState.getDayToStartOn(), 1);
             chooseCorrectly = true;
             reportId = "";
             autoFillLogin = uiState.getAutoFillLogin();
@@ -1740,7 +1756,6 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             password = passwordInput.getText().toString();
             listUrl = normalizeOptionalUrl(listUrlInput.getText().toString());
             mode = MODE_VIDEO;
-            dayToStartOn = parsePositiveInt(dayInput.getText().toString(), 1);
             chooseCorrectly = true;
             reportId = "";
             autoFillLogin = autoFillLoginCheck.isChecked();
@@ -1764,7 +1779,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
                 .putString(KEY_MODE, mode)
                 .putBoolean(KEY_CHOOSE_CORRECTLY, chooseCorrectly)
                 .putString(KEY_REPORT_ID, reportId)
-                .putInt(KEY_DAY_TO_START_ON, dayToStartOn)
+                .putInt(KEY_DAY_TO_START_ON, 1)
                 .putBoolean(KEY_AUTO_FILL_LOGIN, autoFillLogin)
                 .putBoolean(KEY_AUTO_SUBMIT_LOGIN, autoSubmitLogin)
                 .putBoolean(KEY_DESKTOP_MODE, desktopMode)
@@ -1777,14 +1792,13 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             uiState.setListUrl(listUrl);
             uiState.setListUrlTitle(listUrlTitle);
             uiState.setMode(mode);
-            uiState.setDayToStartOn(String.valueOf(dayToStartOn));
+            uiState.setDayToStartOn("1");
             uiState.setBackgroundKeepAlive(backgroundKeepAlive);
         }
         if (listUrlInput != null) {
             usernameInput.setText(username);
             passwordInput.setText(password);
             listUrlInput.setText(listUrl);
-            dayInput.setText(String.valueOf(dayToStartOn));
         }
         updateAutomationButtons();
         syncBackgroundKeepAlive();
@@ -1816,7 +1830,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         config.put(KEY_MODE, MODE_VIDEO);
         config.put(KEY_CHOOSE_CORRECTLY, true);
         config.put(KEY_REPORT_ID, "");
-        config.put(KEY_DAY_TO_START_ON, prefs.getInt(KEY_DAY_TO_START_ON, 1));
+        config.put(KEY_DAY_TO_START_ON, 1);
         config.put(KEY_AUTO_FILL_LOGIN, prefs.getBoolean(KEY_AUTO_FILL_LOGIN, true));
         config.put(KEY_AUTO_SUBMIT_LOGIN, prefs.getBoolean(KEY_AUTO_SUBMIT_LOGIN, true));
         config.put(KEY_DESKTOP_MODE, prefs.getBoolean(KEY_DESKTOP_MODE, true));
@@ -1824,6 +1838,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         config.put(KEY_BACKGROUND_KEEP_ALIVE, prefs.getBoolean(KEY_BACKGROUND_KEEP_ALIVE, true));
         config.put("child_session_active", !parentSessions.isEmpty());
         config.put("child_task_kind", parentSessions.isEmpty() ? "" : childTaskKind);
+        config.put("parent_course_signature", parentSessions.isEmpty() ? "" : childCourseSignature);
         return config;
     }
 
@@ -2089,7 +2104,10 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             } else if ("nativeTap".equals(type)) {
                 handleNativeTap(json);
             } else if ("closeChildSession".equals(type)) {
-                closeChildSession(json.optString("reason", "page"));
+                closeChildSession(
+                        json.optString("reason", "page"),
+                        json.optString("passedCourseSignature", "")
+                );
             } else if ("restartBrowser".equals(type)) {
                 restartBrowserFromAutomation(json.optString("reason", "unknown"), json.optString("url", ""));
             } else if ("listUrlDiscoveryLog".equals(type)) {
@@ -2132,6 +2150,10 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
     }
 
     private void closeChildSession(String reason) {
+        closeChildSession(reason, "");
+    }
+
+    private void closeChildSession(String reason, String passedCourseSignature) {
         if (parentSessions.isEmpty()) {
             String listUrl = configuredListUrl();
             if (prefs.getBoolean(KEY_AUTOMATION_RUNNING, false) && !listUrl.isEmpty()) {
@@ -2147,6 +2169,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         GeckoSession parent = parentSessions.pop();
         session = parent;
         childTaskKind = "";
+        childCourseSignature = "";
         activePort = null;
         geckoView.setSession(parent);
         try {
@@ -2154,7 +2177,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         } catch (RuntimeException ignored) {
         }
         attachBridgeToSession(parent);
-        notifyChildSessionClosed(reason);
+        notifyChildSessionClosed(reason, passedCourseSignature);
         if (prefs.getBoolean(KEY_AUTOMATION_RUNNING, false)) {
             sendAutomationCommand("start");
         }
@@ -2167,6 +2190,7 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             GeckoSession parent = parentSessions.pop();
             session = parent;
             childTaskKind = "";
+            childCourseSignature = "";
             activePort = null;
             geckoView.setSession(parent);
             try {
@@ -2177,14 +2201,23 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
         }
         pendingChildTaskKind = "";
         childTaskKind = "";
+        pendingChildCourseSignature = "";
+        childCourseSignature = "";
         notifyChildSessionClosed(reason);
     }
 
     private void notifyChildSessionClosed(String reason) {
+        notifyChildSessionClosed(reason, "");
+    }
+
+    private void notifyChildSessionClosed(String reason, String passedCourseSignature) {
         JSONObject message = new JSONObject();
         try {
             message.put("type", "childSessionClosed");
             message.put("reason", reason);
+            if (!passedCourseSignature.isEmpty()) {
+                message.put("passedCourseSignature", passedCourseSignature);
+            }
             message.put("automationRunning", prefs.getBoolean(KEY_AUTOMATION_RUNNING, false));
             message.put("at", System.currentTimeMillis());
         } catch (JSONException ignored) {
@@ -2218,6 +2251,10 @@ public class MainActivity extends ComponentActivity implements AutoEwtUiControll
             String taskKind = json.optString("taskKind", "");
             if (!taskKind.isEmpty()) {
                 pendingChildTaskKind = taskKind;
+            }
+            String taskSignature = json.optString("taskSignature", "");
+            if (!taskSignature.isEmpty()) {
+                pendingChildCourseSignature = taskSignature;
             }
         }
         if (!Double.isFinite(clientX) || !Double.isFinite(clientY) || viewportWidth <= 0 || viewportHeight <= 0) {

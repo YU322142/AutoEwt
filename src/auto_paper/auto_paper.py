@@ -11,11 +11,28 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 
 from auto_base import AutoBase
+from manual_intervention import BrowserControlRequested
 from .get_corret_answer_v2 import get_answer
 from .get_info_by_current_url import get_info_from_url
 
 
 class AutoPaper(AutoBase):
+    def __init__(
+        self,
+        config=None,
+        stop_event=None,
+        visible_handoff_event=None,
+        foreground_request_event=None,
+        manual_intervention_sink=None,
+    ):
+        super().__init__(
+            config=config,
+            stop_event=stop_event,
+            visible_handoff_event=visible_handoff_event,
+            foreground_request_event=foreground_request_event,
+            manual_intervention_sink=manual_intervention_sink,
+        )
+
     def finish_a_day(self, day: WebElement) -> None:
         self.click(day)
         time.sleep(2 * self.config.get('delay_multiplier'))
@@ -25,10 +42,13 @@ class AutoPaper(AutoBase):
         unit = '张试卷'
         logging.info(f'该天还剩 {len(btns)} {unit}')
         for i in range(len(btns)):
+            self.check_control_requests()
             logging.info(f'第 {i + 1} / {len(btns)} {unit}')
             try:
                 self.finish_a_test(btns[i])
-            except:
+            except BrowserControlRequested:
+                raise
+            except Exception:
                 logging.error(traceback.format_exc())
                 logging.warning('该试卷已跳过')
                 # 关闭页面，返回首页

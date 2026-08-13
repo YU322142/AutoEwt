@@ -1936,7 +1936,7 @@ private fun ConfigAdvancedPanel(controller: AutoEwtUiController, modifier: Modif
             Column(modifier = Modifier.weight(1f)) {
                 SectionTitle("高级设置")
                 Text(
-                    text = "当前：刷课，从第 ${state.dayToStartOn.ifBlank { "1" }} 天开始，${if (state.desktopMode) "桌面浏览器模式" else "移动浏览器模式"}",
+                    text = "当前：刷课，始终从第 1 天遍历，${if (state.desktopMode) "桌面浏览器模式" else "移动浏览器模式"}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
@@ -1950,14 +1950,11 @@ private fun ConfigAdvancedPanel(controller: AutoEwtUiController, modifier: Modif
         if (advancedExpanded) {
             WarningBox("高级设置会改变自动化入口、登录行为和浏览器 UA/viewport。改错可能导致无法登录、日期/课程识别异常或触发浏览器重启；除非排查兼容问题，建议保持默认。")
             SectionTitle("任务设置")
-            OutlinedTextField(
-                value = state.dayToStartOn,
-                onValueChange = { state.dayToStartOn = it.filter(Char::isDigit) },
-                enabled = inputsEnabled,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("从第几天开始") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            Text(
+                text = "课程遍历固定从第 1 天开始，避免漏掉前面日期的检查点任务。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
             )
             SectionTitle("登录与浏览器兼容")
             CheckRow(

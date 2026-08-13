@@ -27,10 +27,11 @@ android-geckoview/       Android GeckoView 实验版
 ### 1. 准备环境
 
 - Python 3.12
-- `uv`
-- 浏览器与对应版本的 WebDriver
+- Chrome 或 Edge 浏览器
 
-推荐使用 Edge 或 Chrome。浏览器驱动需要与你本机浏览器版本匹配。
+推荐使用系统安装的 Edge 或 Chrome。默认留空 `driver_path` 和
+`browser_binary` 时，Selenium Manager 会自动定位浏览器并准备匹配驱动；
+只有使用便携浏览器或自动解析失败时，才需要手动配置二者。
 
 常用下载地址：
 
@@ -53,12 +54,15 @@ username: 用户名
 password: 密码
 list_url: 课程列表页面的链接
 browser: Chrome
-driver_path: .\chromedriver.exe
-browser_binary: .\chrome-win64\chrome.exe
+driver_path: ''
+browser_binary: ''
 options: --mute-audio --headless
 mode: video
 delay_multiplier: 1.0
-day_to_start_on: 1
+parallelism: 2
+task_urls: []
+manual_handoff_enabled: true
+system_notifications: true
 choose_correctly: true
 report_id:
 ```
@@ -67,17 +71,22 @@ report_id:
 
 - `mode: video`：刷课模式
 - `mode: paper`：做题模式
-- `driver_path`：浏览器驱动路径
-- `browser_binary`：可选，便携浏览器路径
+- `driver_path`：可选，手动指定浏览器驱动路径；留空时使用 Selenium Manager
+- `browser_binary`：可选，便携浏览器路径；留空时使用系统浏览器
 - `options`：浏览器启动参数
-- `day_to_start_on`：从第几天开始扫描
+- 视频任务始终从页面第一天开始逐日扫描，优先处理“已学完但漏检”的课程
+- `parallelism`：桌面批量任务的并发账号数；同一账号的任务严格串行，不会同时启动两个电脑端浏览器
+- `task_urls`：GUI 保存的批量任务 URL 列表
+- `accounts`：GUI 管理的多账户列表；每个任务会绑定一个账户
+- `manual_handoff_enabled`：无头任务遇到真人验证时，显示同一个后台浏览器窗口并保留原验证页面
+- `system_notifications`：真人验证或人工窗口排队时发送 Windows 系统通知
 - `report_id`：做题模式需要时填写
 
 ### 3. 命令行启动
 
 ```powershell
-uv sync
-uv run python src/main.py
+python -m pip install -r requirements.txt
+python src/main.py
 ```
 
 程序异常崩溃后会自动等待并重启；正常完成或用户停止时才退出。
@@ -89,28 +98,30 @@ GUI 与核心自动化逻辑分离，命令行入口仍然保留。
 安装 GUI 依赖：
 
 ```powershell
-uv sync --extra gui
+python -m pip install -r requirements-gui.txt
 ```
+
+首次使用或 OOBE 版本升级时，GUI 会启动五步设置向导：管理多个账户并选择默认账户、导入账号任务表格、配置浏览器与人工验证、设置运行模式/账号并发，最后确认后才原子写入配置。旧版 `task_urls`/详情 `list_url` 会迁移到默认账户；损坏的 YAML 会备份为 `config.yml.invalid.bak` 并进入恢复向导。后续可在“账户”页继续添加账号，或导入含 `账户名称 / 用户名 / 密码 / 启用 / 任务名称 / 任务URL` 列的 `.xlsx`、`.csv`、`.tsv` 表格。表格空白字段不会覆盖已有账户资料。
 
 启动 QFluentWidgets GUI：
 
 ```powershell
-uv run python src/gui.py
+python src/gui.py
 ```
 
 无外部控制台窗口启动：
 
 ```powershell
-uv run python src/gui.pyw
+pythonw src/gui.pyw
 ```
 
-RinUI/QML 实验入口：
+QFluentWidgets GUI 提供首次运行向导、多账户密码库、CSV/TSV/XLSX 表格导入、普通/暑假任务批量发现、任务多选、可调账号并发、逐任务进度和分层高级设置。同一账号的多个任务按列表顺序串行执行，不同账号才会并行。运行中心保留完整日志，并可按账号、任务和线程筛选。无头模式使用独立复选框控制，不需要手写 `--headless` 参数。桌面端不再嵌入 Qt WebEngine：未运行任务的“预览”交给系统浏览器；运行中的后台任务会直接显示它自己的 Selenium 窗口，不会关闭、刷新或重建当前页面，其他并发任务继续在后台运行。
 
-```powershell
-uv run python src/rin_gui.py
-```
+验证码不会被自动破解或拖动。生产环境默认使用无头模式；识别到真人验证后会发送 Windows 系统通知，并且只显示对应任务的浏览器窗口。验证完成后同一会话会隐藏到后台，下一次需要人工时再恢复；用户主动点击“预览”时窗口会保持可见。这个功能要求程序运行在已经登录的交互式 Windows 桌面会话中，Windows 服务 Session 0 无法显示通知或浏览器窗口。
 
-GUI 会提供配置页、运行日志、进度显示与停止控制。核心运行仍由 `src/runner.py` 管理，因此 GUI 与无 GUI 模式可以继续拆分维护。
+普通检查点仍由程序按严格文案和检查点容器自动点击。检查点类型会在同一账号的整个浏览器会话中记忆：如果上一次出现的是拼图验证，那么之后任意课程第一次遇到普通检查点时会额外发送一条系统通知，然后继续自动处理；该提醒不限于同一节课。
+
+Windows GUI 的云端打包入口已显式设为 `src/gui.py`，而不是由打包器猜测；Nuitka 使用 `pyside6` 插件并关闭控制台窗口。命令行入口 `src/main.py` 保持独立。
 
 ## Android 实验版
 

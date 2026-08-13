@@ -6,14 +6,24 @@ username: 用户名
 password: 密码
 list_url: 课程列表页面的链接
 browser: Chrome
-driver_path: .\chromedriver.exe
-browser_binary: .\chrome-win64\chrome.exe
+driver_path: ''
+browser_binary: ''
 options: --mute-audio --headless
+foreground_browser: false
+foreground_on_manual: true
+manual_handoff_enabled: true
+system_notifications: true
+login_wait_timeout: 300
 mode: video
 
 # 延迟倍率（默认1.0，如需修改请输入浮点数）
 delay_multiplier: 1.0
-day_to_start_on: 1
+parallelism: 2
+task_urls: []
+accounts: []
+default_account_id:
+oobe_completed: false
+oobe_version: 0
 
 choose_correctly: true
 report_id:

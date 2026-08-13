@@ -15,7 +15,8 @@ dependencies = [
 [project.optional-dependencies]
 gui = [
     "pyside6-fluent-widgets~=1.11.2",
-    "rinui~=0.4.0",
+    "pywin32>=311; platform_system == 'Windows'",
+    "openpyxl~=3.1.5",
 ]
 
 [[tool.uv.index]]

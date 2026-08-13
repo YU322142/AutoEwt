@@ -1,4 +1,5 @@
-from gui import main
+from gui_qfluent import main
 
 
-main()
+if __name__ == '__main__':
+    raise SystemExit(main())

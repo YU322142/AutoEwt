@@ -8,10 +8,43 @@
   const STUDY_PROGRESS_RE = /学\s*\d+(?:\.\d+)?\s*[%％]/;
   const COURSE_ACTION_RE = /去学习|开始学习|继续学习|播放|去收听|去查看|^学$|学\s*\d+(?:\.\d+)?\s*[%％]/;
   const EXACT_COURSE_ACTION_RE = /^(去学习|开始学习|继续学习|播放|去收听|去查看|学|学\s*\d+(?:\.\d+)?\s*[%％])$/;
-  const CHECKPOINT_ACTION_RE = /我知道了|知道了|点击通过检查|通过检查|继续播放|继续学习|跳过|确定|确认/;
-  const PYTHON_CHECKPOINT_ACTION_RE = /点击通过检查|跳过/;
-  const PAUSED_CHECKPOINT_ACTION_RE = /我知道了|知道了|通过检查|继续播放|继续学习|确定|确认/;
-  const MISSED_CHECKPOINT_RE = /错过了所有看课检测点|再认真观看一次/;
+  const CHECKPOINT_ACTION_LABELS = new Set([
+    "点击通过检查",
+    "通过检查",
+    "继续播放",
+    "跳过"
+  ]);
+  const CHECKPOINT_CONFIRM_TIMEOUT_MS = 5000;
+  const CHECKPOINT_CONTAINER_SELECTOR = [
+    "[class*='spc_video_earnest_check_box']",
+    "[class*='earnest_check']",
+    "[class*='checkpoint']",
+    "[class*='check-point']",
+    "[class*='check_point']",
+    "[data-checkpoint]",
+    "[data-check-point]",
+    "[data-check_point]"
+  ].join(",");
+  const CHECKPOINT_OVERLAY_SELECTOR = [
+    "[role='dialog']",
+    "[aria-modal='true']",
+    ".ant-modal",
+    ".ant-modal-mask",
+    "[class*='modal']",
+    "[class*='dialog']",
+    "[class*='overlay']",
+    "[class*='popup']",
+    "[class*='mask']",
+    "[class*='captcha']",
+    "#captcha"
+  ].join(",");
+  const CHECKPOINT_CONTAINER_MARKER_RE = /检查点|检测点|认真度|认真观看|答题点|视频检查/;
+  const CHECKPOINT_RISK_RE = /认真度检测|近期看课操作异常|后将错过当前检测/;
+  const CHECKPOINT_SLIDER_RE = /向右拖动滑块填充拼图|拖动滑块|滑块填充拼图/;
+  const CHECKPOINT_UNKNOWN_RE = /检测点|检查点|认真度|认真观看|验证|验证码|滑块|拼图|继续播放|点击通过检查|通过检查|跳过/;
+  const MISSED_CHECKPOINT_RE = /(?:错过了?|漏掉了?|未通过|未检测到)\s*(?:所有|全部|本次)?\s*(?:看课|观看|视频)?\s*(?:检查|检测)点|(?:所有|全部)\s*(?:看课|观看|视频)?\s*(?:检查|检测)点\s*(?:已|都)?\s*(?:错过|漏检)|(?:再|重新)\s*认真观看(?:一次|一遍)/;
+  const PLAYBACK_BLOCKED_RE = /检测到网络不稳定或开启了第三方辅助工具|学习数据无法被记录/;
+  const ATTENTION_CHECKPOINT_RE = /认真度检测|近期看课操作异常|将图形拖动至正确位置|向右拖动滑块填充拼图|后将错过当前检测/;
   const DAY_DATE_RE = /(\d{1,2})\s*月\s*(\d{1,2})\s*日/;
   const DAY_INDEX_RE = /第\s*\d+\s*天/;
   const COURSE_GROUP_PROGRESS_RE = /(^|[^已])完成\s*(\d+)\s*\/\s*(\d+)/;
@@ -28,10 +61,16 @@
   const WATCH_PROGRESS_RE = /已看\s*\d+(?:\.\d+)?\s*[%％]/;
   const QUIZ_TASK_RE = /试卷|测一测|测验|考试|答题|继续答|去答题|去考试|去练习|试题|题目|\/\s*\d+\s*题|[0-9０-９]+\s*题/;
   const LOGIN_ERROR_RE = /账号或密码错误|用户名或密码错误|密码错误|账号不存在|用户不存在|登录失败|请输入正确|验证码错误|验证码不正确|短信验证码错误|账号异常|账户异常/;
+  const STANDARD_DISCOVERY_URL = "https://teacher.ewt360.com/ewtbend/bend/index/index.html#/student/homework";
+  const HOLIDAY_DISCOVERY_URL = "https://teacher.ewt360.com/ewtbend/bend/index/index.html#/holiday/student/home";
+  const DISCOVERY_PAGE_STANDARD = "standard";
+  const DISCOVERY_PAGE_HOLIDAY = "holiday";
   const DISCOVERY_FILTERS = ["进行中", "未开始", "已截止"];
-  const DISCOVERY_TASK_ACTION_RE = /查看详情|去完成|继续完成|去学习|开始学习|继续学习/;
+  const HOLIDAY_DISCOVERY_FILTERS = ["常规任务", "专项提升"];
+  const DISCOVERY_TASK_ACTION_RE = /查看详情|去完成|继续完成|去学习|开始学习|继续学习|进入学习|进入任务|开始任务|继续任务/;
   const missedCheckpointReplayElements = new WeakSet();
   const progressCourseElements = new WeakSet();
+  const passedMissedCheckpointSignatures = new Set();
 
   let port = null;
   let config = {};
@@ -51,6 +90,14 @@
   let playVideosEnteredAt = 0;
   let lastCheckpointTapAt = 0;
   let lastCheckpointSignature = "";
+  let pendingCheckpointElement = null;
+  let pendingCheckpointLabel = "";
+  let pendingCheckpointSignature = "";
+  let pendingCheckpointSince = 0;
+  let checkpointTimedOutSignature = "";
+  let attentionCheckpointLogged = false;
+  let unknownCheckpointLogged = false;
+  let lastMissedCheckpointReturnAt = 0;
   let lastStuckSignature = "";
   let stuckCount = 0;
   let lastRestartRequestAt = 0;
@@ -61,11 +108,14 @@
   let urlDiscoveryTimer = 0;
   let urlDiscoveryFilterIndex = 0;
   let urlDiscoveryPendingFilter = "";
+  let urlDiscoveryInitialPageCollected = false;
   let urlDiscoveryAttempts = 0;
   let urlDiscoveryHomeworkWaits = 0;
   let urlDiscoveryInitialOverviewUrl = "";
   let urlDiscoverySawHomeworkPage = false;
   let urlDiscoveryTargetUrl = "";
+  let urlDiscoveryTargetUrls = [];
+  let urlDiscoveryTargetIndex = 0;
   let urlDiscoveryCandidates = [];
   let urlDiscoveryCandidateKeys = new Set();
   let urlDiscoveryCandidateCounter = 0;
@@ -113,7 +163,7 @@
               scheduleListUrlDiscovery(0);
             }
           } else {
-            startListUrlDiscovery("manual", message.targetUrl || "");
+            startListUrlDiscovery("manual", message.targetUrl || "", message.targetUrls || []);
           }
         } else if (message.type === "stopListUrlDiscovery") {
           stopListUrlDiscovery();
@@ -128,6 +178,10 @@
           }
         } else if (message.type === "childSessionClosed") {
           childSessionActive = false;
+          const passedSignature = String(message.passedCourseSignature || "");
+          if (message.reason === "missedReplayCheckpointPassed" && passedSignature) {
+            passedMissedCheckpointSignatures.add(passedSignature);
+          }
           if (message.automationRunning || automationRunning || config.automation_running) {
             automationRunning = true;
             scheduleAutomation(300);
@@ -379,16 +433,16 @@
     }, payload));
   }
 
-  function startListUrlDiscovery(reason, targetUrl) {
+  function startListUrlDiscovery(reason, targetUrl, targetUrls) {
     automationRunning = false;
     urlDiscoveryActive = true;
-    urlDiscoveryFilterIndex = 0;
-    urlDiscoveryPendingFilter = "";
     urlDiscoveryAttempts = 0;
-    urlDiscoveryHomeworkWaits = 0;
     urlDiscoveryInitialOverviewUrl = isTaskOverviewPage() ? location.href : "";
     urlDiscoverySawHomeworkPage = false;
-    urlDiscoveryTargetUrl = String(targetUrl || "");
+    urlDiscoveryTargetUrls = discoveryTargetUrls(targetUrl, targetUrls);
+    urlDiscoveryTargetIndex = 0;
+    urlDiscoveryTargetUrl = urlDiscoveryTargetUrls[0] || STANDARD_DISCOVERY_URL;
+    resetDiscoveryPageScanState();
     urlDiscoveryCandidates = [];
     urlDiscoveryCandidateKeys = new Set();
     urlDiscoveryCandidateCounter = 0;
@@ -404,6 +458,46 @@
       return;
     }
     scheduleListUrlDiscovery(300);
+  }
+
+  function discoveryTargetUrls(targetUrl, targetUrls) {
+    const requested = Array.isArray(targetUrls) ? targetUrls : [];
+    const inferredTarget = discoveryListUrlForPageKind(discoverySourcePageKind(targetUrl));
+    const targets = [targetUrl, ...requested, inferredTarget, STANDARD_DISCOVERY_URL, HOLIDAY_DISCOVERY_URL]
+      .map((url) => String(url || "").trim())
+      .filter((url) => Boolean(discoveryPageKind(url)));
+    const seenKinds = new Set();
+    return targets.filter((url) => {
+      const kind = discoveryPageKind(url);
+      if (!kind || seenKinds.has(kind)) {
+        return false;
+      }
+      seenKinds.add(kind);
+      return true;
+    });
+  }
+
+  function resetDiscoveryPageScanState() {
+    urlDiscoveryFilterIndex = 0;
+    urlDiscoveryPendingFilter = "";
+    urlDiscoveryInitialPageCollected = false;
+    urlDiscoveryHomeworkWaits = 0;
+    urlDiscoveryCurrentFilter = "";
+  }
+
+  function advanceDiscoveryTarget() {
+    if (urlDiscoveryTargetIndex + 1 >= urlDiscoveryTargetUrls.length) {
+      return false;
+    }
+    urlDiscoveryTargetIndex += 1;
+    urlDiscoveryTargetUrl = urlDiscoveryTargetUrls[urlDiscoveryTargetIndex];
+    resetDiscoveryPageScanState();
+    location.href = urlDiscoveryTargetUrl;
+    postListUrlDiscoveryLog("正在扫描另一类任务入口", {
+      pageKind: discoveryPageKind(urlDiscoveryTargetUrl)
+    });
+    scheduleListUrlDiscovery(1800);
+    return true;
   }
 
   function stopListUrlDiscovery() {
@@ -477,6 +571,21 @@
       return;
     }
 
+    const currentPageKind = discoveryPageKind(location.href);
+    const targetPageKind = discoveryPageKind(urlDiscoveryTargetUrl);
+    if (
+      currentPageKind
+      && targetPageKind
+      && currentPageKind !== targetPageKind
+      && !urlDiscoverySelectionCandidate
+      && !urlDiscoveryWaitingForSelection
+    ) {
+      location.href = urlDiscoveryTargetUrl;
+      postListUrlDiscoveryLog("正在切换任务入口", { pageKind: targetPageKind });
+      scheduleListUrlDiscovery(1500);
+      return;
+    }
+
     if (!isStudentHomeworkPage()) {
       if (urlDiscoveryTargetUrl && !isLoginPage()) {
         location.href = urlDiscoveryTargetUrl;
@@ -505,6 +614,12 @@
       return;
     }
 
+    if (clickHolidayDiscoveryOnboarding()) {
+      postListUrlDiscoveryLog("已关闭暑假任务首次进入提示");
+      scheduleListUrlDiscovery(1200);
+      return;
+    }
+
     if (!homeworkDiscoveryUiReady()) {
       urlDiscoveryHomeworkWaits += 1;
       if (urlDiscoveryHomeworkWaits <= 15) {
@@ -520,6 +635,8 @@
     }
 
     hideCompletedDiscoveryTasks();
+
+    collectInitialDiscoveryCandidates();
 
     if (urlDiscoverySelectionCandidate) {
       clickSelectedListUrlCandidate();
@@ -538,8 +655,9 @@
       return;
     }
 
-    if (urlDiscoveryFilterIndex < DISCOVERY_FILTERS.length) {
-      const filter = DISCOVERY_FILTERS[urlDiscoveryFilterIndex];
+    const discoveryFilters = discoveryFiltersForPageKind(discoveryPageKind(location.href));
+    if (urlDiscoveryFilterIndex < discoveryFilters.length) {
+      const filter = discoveryFilters[urlDiscoveryFilterIndex];
       urlDiscoveryFilterIndex += 1;
       if (clickDiscoveryFilter(filter)) {
         urlDiscoveryPendingFilter = filter;
@@ -552,7 +670,9 @@
       return;
     }
 
-    reportDiscoveryCandidateChoices();
+    if (!advanceDiscoveryTarget()) {
+      reportDiscoveryCandidateChoices();
+    }
   }
 
   function reportDiscoveryCandidateChoices() {
@@ -598,8 +718,45 @@
     return /student-task-overview/i.test(location.href) && /homeworkId=/.test(location.href);
   }
 
+  function discoveryPageKind(url) {
+    const href = String(url || "");
+    if (/#\/holiday\/student\/home(?:[/?]|$)/i.test(href)) {
+      return DISCOVERY_PAGE_HOLIDAY;
+    }
+    if (/#\/student\/homework(?:[/?]|$)/i.test(href)) {
+      return DISCOVERY_PAGE_STANDARD;
+    }
+    return "";
+  }
+
+  function discoverySourcePageKind(url) {
+    const pageKind = discoveryPageKind(url);
+    if (pageKind) {
+      return pageKind;
+    }
+    return /#\/holiday\/student-task-overview(?:[/?]|$)/i.test(String(url || ""))
+      ? DISCOVERY_PAGE_HOLIDAY
+      : "";
+  }
+
+  function discoveryListUrlForPageKind(pageKind) {
+    if (pageKind === DISCOVERY_PAGE_HOLIDAY) {
+      return HOLIDAY_DISCOVERY_URL;
+    }
+    if (pageKind === DISCOVERY_PAGE_STANDARD) {
+      return STANDARD_DISCOVERY_URL;
+    }
+    return "";
+  }
+
+  function discoveryFiltersForPageKind(pageKind) {
+    return pageKind === DISCOVERY_PAGE_HOLIDAY
+      ? HOLIDAY_DISCOVERY_FILTERS
+      : DISCOVERY_FILTERS;
+  }
+
   function isStudentHomeworkPage() {
-    return /#\/student\/homework/i.test(location.href);
+    return Boolean(discoveryPageKind(location.href));
   }
 
   function clickMyTaskNav() {
@@ -627,6 +784,40 @@
     return clickInfo.clicked;
   }
 
+  function findHolidayDiscoveryOnboardingButton() {
+    if (discoveryPageKind(location.href) !== DISCOVERY_PAGE_HOLIDAY) {
+      return null;
+    }
+    const containers = Array.from(document.querySelectorAll(
+      "[role='dialog'], .ant-modal, [class*='modal'], [class*='dialog']"
+    )).filter((container) => visible(container) && compactText(container).includes("即刻开启"));
+    const buttons = [];
+    containers.forEach((container) => {
+      Array.from(container.querySelectorAll("button, a, [role='button'], div, span"))
+        .filter((element) => {
+          if (!visible(element) || compactText(element) !== "即刻开启") {
+            return false;
+          }
+          const rect = element.getBoundingClientRect();
+          return rect.width <= 260 && rect.height <= 100;
+        })
+        .map((element) => element.closest("button, a, [role='button']") || element)
+        .filter(visible)
+        .forEach((element) => buttons.push(element));
+    });
+    return uniqueElements(buttons).sort((left, right) => elementArea(left) - elementArea(right))[0] || null;
+  }
+
+  function clickHolidayDiscoveryOnboarding() {
+    const target = findHolidayDiscoveryOnboardingButton();
+    if (!target) {
+      return false;
+    }
+    const clickInfo = clickElementInfo(target);
+    requestNativeTap(clickInfo, "即刻开启", "discoverHolidayOnboarding");
+    return clickInfo.clicked;
+  }
+
   function clickDiscoveryFilter(label) {
     const target = findDiscoveryFilter(label);
     if (!target) {
@@ -637,16 +828,17 @@
     return clickInfo.clicked;
   }
 
-  function findDiscoveryFilter(label) {
+  function findDiscoveryFilter(label, pageKind) {
+    const kind = pageKind || discoveryPageKindForFilter(label) || discoveryPageKind(location.href) || DISCOVERY_PAGE_STANDARD;
     const candidates = Array.from(document.querySelectorAll("li, a, button, [role='button'], span, div"))
       .filter((element) => {
         if (!visible(element)) {
           return false;
         }
-        const text = compactText(element);
+        const text = discoveryViewLabel(compactText(element), kind);
         const rect = element.getBoundingClientRect();
         return text === label
-          && rect.left < viewportWidth() * 0.5
+          && (kind === DISCOVERY_PAGE_HOLIDAY || rect.left < viewportWidth() * 0.5)
           && rect.width <= 260
           && rect.height <= 90;
       })
@@ -656,15 +848,98 @@
     return candidates[0] || null;
   }
 
+  function discoveryFilterLabel(text) {
+    const normalized = String(text || "").replace(/\s+/g, "").trim();
+    const match = normalized.match(/^(进行中|未开始|已截止)(?:[（(]?\d+\+?份?[）)]?)?$/);
+    return match ? match[1] : "";
+  }
+
+  function discoveryHolidayFilterLabel(text) {
+    const normalized = String(text || "").replace(/\s+/g, "").trim();
+    const match = normalized.match(/^(常规任务|专项提升)(?:[（(]?\d+\+?(?:份|项|个)?[）)]?)?$/);
+    return match ? match[1] : "";
+  }
+
+  function discoveryViewLabel(text, pageKind) {
+    return pageKind === DISCOVERY_PAGE_HOLIDAY
+      ? discoveryHolidayFilterLabel(text)
+      : discoveryFilterLabel(text);
+  }
+
+  function discoveryPageKindForFilter(label) {
+    if (HOLIDAY_DISCOVERY_FILTERS.includes(label)) {
+      return DISCOVERY_PAGE_HOLIDAY;
+    }
+    if (DISCOVERY_FILTERS.includes(label)) {
+      return DISCOVERY_PAGE_STANDARD;
+    }
+    return "";
+  }
+
+  function selectedDiscoveryFilterLabel(pageKind) {
+    const kind = pageKind || discoveryPageKind(location.href) || DISCOVERY_PAGE_STANDARD;
+    for (const label of discoveryFiltersForPageKind(kind)) {
+      const element = findDiscoveryFilter(label, kind);
+      if (element && isSelectedDiscoveryFilter(element, label, kind)) {
+        return label;
+      }
+    }
+    return "";
+  }
+
+  function isSelectedDiscoveryFilter(element, label, pageKind) {
+    let current = element;
+    for (let depth = 0; current && current !== document.body && depth < 4; depth += 1) {
+      if (discoveryViewLabel(compactText(current), pageKind) !== label) {
+        break;
+      }
+      const className = String(current.className || "");
+      if (
+        current.getAttribute("aria-selected") === "true"
+        || current.getAttribute("data-active") === "true"
+        || /\b(active|selected|current|checked)\b/i.test(className)
+        || /(^|[-_])(active|selected|current|checked)([-_]|$)/i.test(className)
+      ) {
+        return true;
+      }
+      current = current.parentElement;
+    }
+    return false;
+  }
+
+  function collectInitialDiscoveryCandidates() {
+    if (urlDiscoveryInitialPageCollected) {
+      return { collected: false, filter: urlDiscoveryCurrentFilter, added: 0 };
+    }
+    const pageKind = discoveryPageKind(location.href) || DISCOVERY_PAGE_STANDARD;
+    const filters = discoveryFiltersForPageKind(pageKind);
+    const availableFilters = filters.filter((label) => findDiscoveryFilter(label, pageKind));
+    const selectedFilter = selectedDiscoveryFilterLabel(pageKind);
+    if (availableFilters.length > 0 && !selectedFilter) {
+      return { collected: false, filter: "", added: 0 };
+    }
+    urlDiscoveryInitialPageCollected = true;
+    if (selectedFilter) {
+      urlDiscoveryCurrentFilter = selectedFilter;
+    }
+    const added = collectDiscoveryCandidates(selectedFilter);
+    return { collected: true, filter: selectedFilter, added };
+  }
+
   function homeworkDiscoveryUiReady() {
-    if (DISCOVERY_FILTERS.some((label) => findDiscoveryFilter(label))) {
+    const pageKind = discoveryPageKind(location.href) || DISCOVERY_PAGE_STANDARD;
+    const filters = discoveryFiltersForPageKind(pageKind);
+    if (filters.some((label) => findDiscoveryFilter(label, pageKind))) {
       return true;
     }
     if (discoveryTaskCards(false).length > 0 || discoveryTaskCards(true).length > 0) {
       return true;
     }
     const bodyText = compactText(document.body).slice(0, 2000);
-    return DISCOVERY_FILTERS.some((label) => bodyText.includes(label))
+    if (pageKind === DISCOVERY_PAGE_HOLIDAY) {
+      return /我的学习任务|常规任务|专项提升|暂无学习任务|暂无任务/.test(bodyText);
+    }
+    return filters.some((label) => bodyText.includes(label))
       && /我的任务|布置人|开始时间|截止时间|查看详情|去完成|去学习/.test(bodyText);
   }
 
@@ -719,7 +994,13 @@
     const teacher = discoveryField(text, /布置人[:：]\s*([^开始截止查看去继续]+)/);
     const startTime = discoveryField(text, /开始时间[:：]\s*([^截止查看去继续]+)/);
     const deadline = discoveryField(text, /截止时间[:：]\s*([^查看去继续]+)/);
+    const pageKind = discoveryPageKind(location.href) || discoveryPageKindForFilter(filter) || DISCOVERY_PAGE_STANDARD;
+    const listUrl = isStudentHomeworkPage()
+      ? location.href
+      : discoveryListUrlForPageKind(pageKind);
     const key = [
+      pageKind,
+      String(filter || ""),
       title,
       teacher,
       startTime,
@@ -731,6 +1012,8 @@
       title,
       status: discoveryTaskStatus(card, filter),
       filter: String(filter || ""),
+      pageKind,
+      listUrl,
       startTime,
       deadline,
       teacher,
@@ -768,7 +1051,7 @@
     if (/进行中/.test(text)) {
       return "进行中";
     }
-    if (filter) {
+    if (DISCOVERY_FILTERS.includes(filter)) {
       return `${filter}（未完成）`;
     }
     return "未完成";
@@ -788,7 +1071,14 @@
     urlDiscoveryWaitingForSelection = false;
     urlDiscoverySelectionCandidate = candidate;
     urlDiscoverySelectionRetries = 0;
-    if (candidate.filter && DISCOVERY_FILTERS.includes(candidate.filter) && candidate.filter !== urlDiscoveryCurrentFilter) {
+    if (!candidateIsOnCurrentDiscoveryPage(candidate)) {
+      location.href = candidate.listUrl || discoveryListUrlForPageKind(candidate.pageKind);
+      resetDiscoveryPageScanState();
+      postListUrlDiscoveryLog("正在返回所选任务的来源页面", { pageKind: candidate.pageKind });
+      scheduleListUrlDiscovery(1800);
+      return;
+    }
+    if (candidateNeedsDiscoveryFilterSwitch(candidate)) {
       if (clickDiscoveryFilter(candidate.filter)) {
         urlDiscoveryCurrentFilter = candidate.filter;
         postListUrlDiscoveryLog(`已切换到${candidate.filter}任务`);
@@ -801,8 +1091,24 @@
   }
 
   function clickSelectedListUrlCandidate() {
-    hideCompletedDiscoveryTasks();
     const candidate = urlDiscoverySelectionCandidate;
+    if (!candidateIsOnCurrentDiscoveryPage(candidate)) {
+      location.href = candidate.listUrl || discoveryListUrlForPageKind(candidate.pageKind);
+      resetDiscoveryPageScanState();
+      postListUrlDiscoveryLog("继续返回所选任务的来源页面", { pageKind: candidate.pageKind });
+      scheduleListUrlDiscovery(1800);
+      return;
+    }
+    if (candidateNeedsDiscoveryFilterSwitch(candidate)) {
+      if (clickDiscoveryFilter(candidate.filter)) {
+        urlDiscoveryCurrentFilter = candidate.filter;
+        postListUrlDiscoveryLog(`已返回${candidate.filter}任务页签`);
+        scheduleListUrlDiscovery(3500);
+        return;
+      }
+      postListUrlDiscoveryLog(`等待${candidate.filter}任务页签出现`);
+    }
+    hideCompletedDiscoveryTasks();
     const card = findDiscoveryCardByCandidate(candidate);
     if (card) {
       urlDiscoverySelectionCandidate = null;
@@ -812,7 +1118,7 @@
     }
     urlDiscoverySelectionRetries += 1;
     if (urlDiscoverySelectionRetries <= 5) {
-      if (candidate.filter && DISCOVERY_FILTERS.includes(candidate.filter) && candidate.filter !== urlDiscoveryCurrentFilter) {
+      if (candidateNeedsDiscoveryFilterSwitch(candidate)) {
         clickDiscoveryFilter(candidate.filter);
         urlDiscoveryCurrentFilter = candidate.filter;
       }
@@ -826,6 +1132,23 @@
       reason: `没有在当前列表中找到所选任务：${candidate.title}`,
       timestamp: Date.now()
     });
+  }
+
+  function candidateIsOnCurrentDiscoveryPage(candidate) {
+    if (!candidate) {
+      return false;
+    }
+    const pageKind = candidate.pageKind || discoveryPageKind(candidate.listUrl);
+    return Boolean(pageKind) && discoveryPageKind(location.href) === pageKind;
+  }
+
+  function candidateNeedsDiscoveryFilterSwitch(candidate, currentFilter) {
+    if (!candidate || !candidate.filter) {
+      return false;
+    }
+    const candidateFilters = discoveryFiltersForPageKind(candidate.pageKind);
+    const selectedFilter = currentFilter === undefined ? urlDiscoveryCurrentFilter : currentFilter;
+    return candidateFilters.includes(candidate.filter) && candidate.filter !== selectedFilter;
   }
 
   function findDiscoveryCardByCandidate(candidate) {
@@ -845,28 +1168,36 @@
   }
 
   function discoveryTaskCards(completed) {
-    return uniqueElements(Array.from(document.querySelectorAll("div[class], li, section"))
+    const candidates = uniqueElements(Array.from(document.querySelectorAll("div[class], li, section"))
       .filter((element) => {
         if (!visible(element)) {
           return false;
         }
         const rect = element.getBoundingClientRect();
         const text = compactText(element);
-        if (rect.width < 120 || rect.height < 80 || text.length < 8 || text.length > 320) {
+        const className = String(element.className || "");
+        const semanticTaskCard = /(^|[-_\s])(task|homework|mission)([-_\s]|$)|task-card|homework-card|mission-card/i.test(className);
+        const maximumTextLength = semanticTaskCard ? 720 : 320;
+        if (rect.width < 120 || rect.height < 80 || text.length < 8 || text.length > maximumTextLength) {
           return false;
         }
-        if (!DISCOVERY_TASK_ACTION_RE.test(text) || !/布置人|开始时间|截止时间|任务|假期|学习计划/.test(text)) {
+        if (!DISCOVERY_TASK_ACTION_RE.test(text) || (!semanticTaskCard && !/布置人|开始时间|截止时间|任务|假期|学习计划/.test(text))) {
           return false;
         }
         if (!completed && isQuizTaskText(text)) {
           return false;
         }
-        const isCompleted = /已完成/.test(text);
+        const isCompleted = /已完成|已提交|已批改/.test(text);
         if (completed) {
           return isCompleted;
         }
         return !isCompleted;
       }));
+    return candidates.filter((element) => !candidates.some((other) => (
+      other !== element
+      && typeof element.contains === "function"
+      && element.contains(other)
+    )));
   }
 
   function clickDiscoveryTask(card) {
@@ -1019,7 +1350,7 @@
     return 0;
   }
 
-  function requestNativeTap(clickInfo, label, reason, taskKind) {
+  function requestNativeTap(clickInfo, label, reason, taskKind, taskSignature) {
     if (!clickInfo || !clickInfo.clicked || !Number.isFinite(clickInfo.clientX) || !Number.isFinite(clickInfo.clientY)) {
       return false;
     }
@@ -1041,6 +1372,9 @@
     };
     if (taskKind) {
       message.taskKind = taskKind;
+    }
+    if (taskSignature) {
+      message.taskSignature = taskSignature;
     }
     return postMessage(message);
   }
@@ -1520,6 +1854,7 @@
   }
 
   function resetDayScanState() {
+    resetCheckpointConfirmation();
     dayCursorIndex = -1;
     dayListSignature = "";
     lastDayClickAt = 0;
@@ -1541,7 +1876,18 @@
     failedCourseSignatures.clear();
     if (clearFinishedOneClick) {
       finishedOneClickSignatures.clear();
+      passedMissedCheckpointSignatures.clear();
     }
+  }
+
+  function resetCheckpointConfirmation() {
+    pendingCheckpointElement = null;
+    pendingCheckpointLabel = "";
+    pendingCheckpointSignature = "";
+    pendingCheckpointSince = 0;
+    checkpointTimedOutSignature = "";
+    lastCheckpointTapAt = 0;
+    lastCheckpointSignature = "";
   }
 
   function shouldPauseAutomationForVisibility() {
@@ -1692,7 +2038,7 @@
     markStaleLessonClick();
 
     const days = findCourseDays();
-    const startIndex = Math.max(0, Number(config.day_to_start_on || 1) - 1);
+    const startIndex = automationStartDayIndex();
     if (!days.length) {
       const result = clickFirstCourseCandidate(0, 0);
       if (result.clicked || result.buttonCount > 0) {
@@ -1779,6 +2125,12 @@
     };
   }
 
+  // Android always scans from the first day so a missed checkpoint on an
+  // earlier day cannot be hidden by a persisted day_to_start_on setting.
+  function automationStartDayIndex() {
+    return 0;
+  }
+
   function clickFirstCourseCandidate(totalDays, dayIndex) {
     const candidates = findCourseButtonCandidates(false);
     const candidate = candidates[0] || null;
@@ -1813,7 +2165,13 @@
         finishedOneClickSignatures.add(candidate.signature);
       }
       const clickInfo = clickElementInfo(candidate.element);
-      requestNativeTap(clickInfo, candidate.label, "course", candidate.kind);
+      requestNativeTap(
+        clickInfo,
+        candidate.label,
+        "course",
+        candidate.kind,
+        candidate.signature
+      );
       return {
         clicked: true,
         label: candidate.label,
@@ -2411,6 +2769,9 @@
         if (!includeFailed && candidate.kind === "oneClick" && finishedOneClickSignatures.has(candidate.signature)) {
           return false;
         }
+        if (!includeFailed && candidate.kind === "missedReplay" && passedMissedCheckpointSignatures.has(candidate.signature)) {
+          return false;
+        }
         if (isQuizCourseElement(candidate.element)) {
           return false;
         }
@@ -2625,6 +2986,9 @@
   }
 
   function courseActionKind(element) {
+    if (isMissedCheckpointReplayContext(element)) {
+      return "missedReplay";
+    }
     const text = compactText(element);
     const className = String(element && element.className || "");
     const isPythonButton = className.includes("btn-AoqsA")
@@ -2644,6 +3008,9 @@
   function courseKindWeight(kind) {
     if (kind === "video") {
       return 0;
+    }
+    if (kind === "missedReplay") {
+      return -1;
     }
     if (kind === "oneClick") {
       return 1;
@@ -2726,28 +3093,49 @@
     return (containerText || text).slice(0, 80);
   }
 
+  function courseStableIdentifier(element) {
+    let current = element;
+    for (let depth = 0; current && depth < 7; depth += 1) {
+      for (const attribute of [
+        "data-id",
+        "data-course-id",
+        "data-homework-id",
+        "data-task-id",
+        "data-lesson-id",
+        "href",
+        "id"
+      ]) {
+        const value = current.getAttribute && current.getAttribute(attribute);
+        if (value !== null && value !== undefined && String(value).trim()) {
+          return `${attribute}:${String(value).trim()}`;
+        }
+      }
+      current = current.parentElement;
+    }
+    return "";
+  }
+
   function courseSignature(element) {
-    const rect = element.getBoundingClientRect();
     const kind = courseActionKind(element);
     const currentDate = currentTaskDateLabel();
-    const label = labelForCourseElement(element);
-    const containerText = compactText(courseContainer(element)).slice(0, 160);
-    if (kind === "oneClick") {
-      return [
-        currentDate,
-        kind,
-        label,
-        containerText
-      ].join("|");
+    const stableIdentifier = courseStableIdentifier(element);
+    if (stableIdentifier) {
+      return [currentDate, kind, stableIdentifier].join("|");
     }
-    return [
-      currentDate,
-      kind,
-      label,
-      containerText,
-      Math.round(rect.top / 8),
-      Math.round(rect.left / 8)
-    ].join("|");
+    return [currentDate, kind, courseSignatureLabel(element)].join("|");
+  }
+
+  function courseSignatureLabel(element) {
+    const ownText = compactText(element);
+    const containerText = compactText(courseContainer(element));
+    const genericAction = /^(?:去学习|开始学习|继续学习|播放|去收听|去查看|学|学\s*\d+(?:\.\d+)?\s*[%％])$/;
+    const raw = genericAction.test(ownText) && containerText ? containerText : (ownText || containerText);
+    const cleaned = String(raw || "课程")
+      .replace(/\s+/g, " ")
+      .replace(/(?:去学习|开始学习|继续学习|播放|去收听|去查看|学\s*\d+(?:\.\d+)?\s*[%％])\s*$/g, "")
+      .trim()
+      .slice(0, 160);
+    return cleaned || "课程";
   }
 
   function isClosedCourseElement(element) {
@@ -2823,11 +3211,46 @@
   }
 
   function handleVideo(video) {
-    const checkpointClicked = clickCheckpointButtons({ videoPaused: Boolean(video.paused), source: "loop" });
+    const checkpointState = inspectCheckpointState({ videoPaused: Boolean(video.paused), source: "loop" });
+    if (checkpointState === "blocked") {
+      pauseVideo(video);
+      finishAutomation("站点触发看课风控提示，本任务已停止且不会自动重试", {
+        reason: "playbackBlocked"
+      });
+      return;
+    }
+    if (checkpointState === "manual") {
+      pauseVideo(video);
+      reportManualCheckpoint(video);
+      return;
+    }
+    attentionCheckpointLogged = false;
+    if (checkpointState === "missed") {
+      pauseVideo(video);
+      returnFromMissedCheckpoint();
+      return;
+    }
+    if (checkpointState === "unknown") {
+      pauseVideo(video);
+      reportUnknownCheckpoint();
+      return;
+    }
+    if (checkpointState === "pending") {
+      // A click request is not proof of success. Keep playback and child-page
+      // closing paused until the checkpoint action disappears or changes.
+      pauseVideo(video);
+      return;
+    }
+    unknownCheckpointLogged = false;
+    const checkpointClicked = checkpointState === "handled";
     if (video.muted !== true) {
       video.muted = true;
     }
-    if (video.paused && !video.ended) {
+    if (video.paused && !video.ended && !checkpointClicked) {
+      if (hasVisibleCheckpointOverlay()) {
+        logAutomation("检测到未知检查点弹层，等待用户确认");
+        return;
+      }
       const playButton = findPlaybackButton();
       let playClickInfo = null;
       const playLabel = isFmPage() ? "播放音频" : "播放视频";
@@ -2860,6 +3283,28 @@
       logAutomation("正在尝试播放视频");
     } else if (checkpointClicked) {
       noteAutomationProgress();
+      if (config.child_task_kind === "missedReplay") {
+        pauseVideo(video);
+        logAutomation("漏检重看课程已顺利通过一个检查点，按已学完处理并返回列表");
+        const closeAfterCheckpoint = () => {
+          const posted = postMessage({
+            type: "closeChildSession",
+            reason: "missedReplayCheckpointPassed",
+            passedCourseSignature: String(config.parent_course_signature || ""),
+            url: location.href,
+            timestamp: Date.now()
+          });
+          if (!posted && typeof history !== "undefined" && history && typeof history.back === "function") {
+            history.back();
+          }
+        };
+        if (typeof setTimeout === "function") {
+          setTimeout(closeAfterCheckpoint, 900);
+        } else {
+          closeAfterCheckpoint();
+        }
+        return;
+      }
       logAutomation("已处理视频检查点，等待继续播放");
     } else if (!video.paused && !video.ended) {
       noteAutomationProgress();
@@ -2906,61 +3351,365 @@
     }
   }
 
-  function checkpointPattern(videoPaused) {
-    return videoPaused
-      ? new RegExp(`${PYTHON_CHECKPOINT_ACTION_RE.source}|${PAUSED_CHECKPOINT_ACTION_RE.source}`)
-      : PYTHON_CHECKPOINT_ACTION_RE;
+  function pauseVideo(video) {
+    if (!video || typeof video.pause !== "function") {
+      return;
+    }
+    try {
+      video.pause();
+    } catch (error) {
+      // The video may be detached while a GeckoView navigation is committing.
+    }
   }
 
-  function clickCheckpointButtons(options) {
-    const videoPaused = Boolean(options && options.videoPaused);
-    const pattern = checkpointPattern(videoPaused);
-    const xpathCandidates = xpathAll(
-      "//*[contains(text(), '我知道了') or contains(text(), '知道了') or contains(text(), '点击通过检查') or contains(text(), '通过检查') or contains(text(), '跳过') or contains(text(), '继续播放') or contains(text(), '继续学习') or contains(text(), '确定') or contains(text(), '确认')]"
-    ).filter(visible);
-    const buttonCandidates = Array.from(document.querySelectorAll("button, a, [role='button'], .ant-btn, div, span"))
-      .filter((element) => visible(element) && pattern.test(compactText(element)));
-    const checkpoints = uniqueElements(xpathCandidates.concat(buttonCandidates).map(actionableElement))
-      .filter((element) => visible(element))
-      .filter((element) => {
-        const text = compactText(element);
-        return text.length > 0 && text.length <= 120 && pattern.test(text);
-      })
-      .sort((left, right) => checkpointScore(left) - checkpointScore(right) || elementArea(left) - elementArea(right));
+  function reportManualCheckpoint(video) {
+    if (!attentionCheckpointLogged) {
+      attentionCheckpointLogged = true;
+      logAutomation("检测到认真度拼图检查点，请手动拖动滑块；程序不会自动破解该验证");
+    }
+    postMessage({
+      type: "automationProgress",
+      currentTime: Number(video && video.currentTime || 0),
+      duration: Number(video && video.duration || 0),
+      progress: videoProgress(video),
+      paused: true,
+      ended: Boolean(video && video.ended),
+      checkpoint: "manual",
+      url: location.href,
+      timestamp: Date.now()
+    });
+  }
 
-    const checkpoint = checkpoints[0] || null;
-    if (!checkpoint) {
-      return false;
+  function reportUnknownCheckpoint() {
+    if (unknownCheckpointLogged) {
+      return;
     }
-    const signature = compactText(checkpoint).slice(0, 80);
+    unknownCheckpointLogged = true;
+    logAutomation("检测到未知检查点弹层，已暂停并等待人工确认；程序不会自动点击");
+  }
+
+  function returnFromMissedCheckpoint() {
     const now = Date.now();
-    if (signature === lastCheckpointSignature && now - lastCheckpointTapAt < 1500) {
-      return false;
+    if (now - lastMissedCheckpointReturnAt < 1500) {
+      return;
     }
+    lastMissedCheckpointReturnAt = now;
+    logAutomation("检测到漏检结果，本节课停止并返回列表重新获取任务");
+    postMessage({
+      type: "closeChildSession",
+      reason: "missedCheckpoint",
+      url: location.href,
+      timestamp: now
+    });
+    if (typeof setTimeout === "function" && typeof history !== "undefined" && history && typeof history.back === "function") {
+      setTimeout(() => history.back(), 800);
+    }
+  }
+
+  // Confirmation-aware wrapper: the earlier detector only identifies an
+  // actionable checkpoint. This state machine does not report handled until
+  // the action disappears or its text changes after the DOM/native click.
+  function inspectCheckpointState(options) {
+    const inspection = inspectCheckpointDom(options);
+    if (inspection.state !== "action") {
+      if (pendingCheckpointSignature) {
+        const actionConfirmed = pendingCheckpointConfirmed();
+        if (actionConfirmed) {
+          resetCheckpointConfirmation();
+          // A blocked/manual/missed result is authoritative failure evidence.
+          // A generic unknown state can simply be the old checkpoint shell
+          // lingering briefly after its actionable control disappeared.
+          return ["blocked", "manual", "missed"].includes(inspection.state)
+            ? inspection.state
+            : "handled";
+        }
+        if (Date.now() - pendingCheckpointSince >= CHECKPOINT_CONFIRM_TIMEOUT_MS) {
+          const timedOutSignature = pendingCheckpointSignature;
+          resetCheckpointConfirmation();
+          checkpointTimedOutSignature = timedOutSignature;
+          return "unknown";
+        }
+        if (inspection.state === "blocked" || inspection.state === "manual") {
+          return inspection.state;
+        }
+        // Missed/unknown text may be rendered before the old action is
+        // removed. The still-visible clicked action is the source of truth.
+        return "pending";
+      }
+      if (checkpointTimedOutSignature && inspection.state === "none") {
+        checkpointTimedOutSignature = "";
+      }
+      return inspection.state;
+    }
+
+    const checkpoint = inspection.action;
+    const signature = checkpointActionSignature(checkpoint, inspection.label);
+    const now = Date.now();
+    if (pendingCheckpointSignature) {
+      if (pendingCheckpointConfirmed()) {
+        resetCheckpointConfirmation();
+        return "handled";
+      }
+      if (now - pendingCheckpointSince >= CHECKPOINT_CONFIRM_TIMEOUT_MS) {
+        const timedOutSignature = pendingCheckpointSignature;
+        resetCheckpointConfirmation();
+        checkpointTimedOutSignature = timedOutSignature;
+        return "unknown";
+      }
+      return "pending";
+    }
+    if (signature === checkpointTimedOutSignature) {
+      return "unknown";
+    }
+
     lastCheckpointSignature = signature;
     lastCheckpointTapAt = now;
     const clickInfo = clickElementInfo(checkpoint);
-    requestNativeTap(clickInfo, signature || "视频检查点", "checkpoint");
-    logAutomation("点击了检查点或答题点", { label: signature });
-    return true;
+    if (!clickInfo.clicked) {
+      return "unknown";
+    }
+    pendingCheckpointElement = checkpoint;
+    pendingCheckpointLabel = inspection.label || compactText(checkpoint);
+    pendingCheckpointSignature = signature;
+    pendingCheckpointSince = now;
+    requestNativeTap(clickInfo, inspection.label || "视频检查点", "checkpoint");
+    logAutomation("点击了检查点或答题点", { label: inspection.label });
+    if (!visible(pendingCheckpointElement)
+      || compactText(pendingCheckpointElement) !== pendingCheckpointLabel) {
+      resetCheckpointConfirmation();
+      return "handled";
+    }
+    return "pending";
   }
 
-  function checkpointScore(element) {
+  function pendingCheckpointConfirmed() {
+    if (!pendingCheckpointElement) {
+      return false;
+    }
+    try {
+      return !visible(pendingCheckpointElement)
+        || compactText(pendingCheckpointElement) !== pendingCheckpointLabel;
+    } catch (error) {
+      // A detached Gecko DOM node is equivalent to a removed action.
+      return true;
+    }
+  }
+
+  function inspectCheckpointDom(options) {
+    const videoPaused = Boolean(options && options.videoPaused);
+    const bodyText = compactText(document.body || document.documentElement);
+
+    // A site risk warning always wins over every acknowledgement or action.
+    if (PLAYBACK_BLOCKED_RE.test(bodyText)) {
+      return { state: "blocked" };
+    }
+
+    const risk = findRiskCheckpoint();
+    if (risk) {
+      return { state: "blocked", element: risk };
+    }
+
+    const slider = findSliderCheckpoint();
+    if (slider) {
+      return { state: "manual", element: slider };
+    }
+
+    const missedAck = findMissedCheckpointAck(videoPaused);
+    if (missedAck) {
+      return { state: "missed", element: missedAck };
+    }
+
+    const missedWarning = findMissedCheckpointWarning();
+    if (missedWarning) {
+      return { state: "missed", element: missedWarning };
+    }
+
+    const actionCandidates = checkpointActionCandidates(videoPaused);
+    const safeAction = actionCandidates
+      .filter((candidate) => Boolean(checkpointContainerForAction(candidate.element)))
+      .sort((left, right) => checkpointActionScore(left.label) - checkpointActionScore(right.label)
+        || elementArea(left.element) - elementArea(right.element))[0] || null;
+    if (safeAction) {
+      return {
+        state: "action",
+        action: safeAction.element,
+        container: checkpointContainerForAction(safeAction.element),
+        label: safeAction.label
+      };
+    }
+
+    const attention = findAttentionCheckpoint();
+    const overlay = findVisibleCheckpointOverlay();
+    const untrustedAck = findExactCheckpointAcknowledgement();
+    if (attention || overlay || actionCandidates.length || untrustedAck) {
+      return {
+        state: "unknown",
+        element: attention || overlay || (actionCandidates[0] && actionCandidates[0].element) || untrustedAck
+      };
+    }
+    return { state: "none" };
+  }
+
+  function checkpointActionCandidates(videoPaused) {
+    const candidates = Array.from(document.querySelectorAll("button, a, [role='button'], .ant-btn, div, span"))
+      .filter((element) => visible(element))
+      .filter((element) => checkpointActionAllowed(compactText(element), videoPaused))
+      .map(actionableElement);
+    return uniqueElements(candidates)
+      .filter((element) => visible(element))
+      .map((element) => ({ element, label: compactText(element) }))
+      .filter((candidate) => checkpointActionAllowed(candidate.label, videoPaused));
+  }
+
+  function checkpointActionAllowed(label, videoPaused) {
+    if (!CHECKPOINT_ACTION_LABELS.has(String(label || ""))) {
+      return false;
+    }
+    return label !== "继续播放" || Boolean(videoPaused);
+  }
+
+  function checkpointContainerForAction(element) {
+    let current = element && element.parentElement;
+    for (let depth = 0; current && current !== document.body && depth < 8; depth += 1) {
+      if (isCheckpointContainer(current)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function isCheckpointContainer(element) {
+    if (!element || !visible(element)) {
+      return false;
+    }
+    if (element.matches && element.matches(CHECKPOINT_CONTAINER_SELECTOR)) {
+      return true;
+    }
     const text = compactText(element);
-    if (/点击通过检查/.test(text)) {
+    if (!text || text.length > 500 || !CHECKPOINT_CONTAINER_MARKER_RE.test(text)) {
+      return false;
+    }
+    if (element.matches && element.matches(CHECKPOINT_OVERLAY_SELECTOR)) {
+      return true;
+    }
+    const className = String(element.className || "");
+    if (/checkpoint|check[-_]?point|earnest[-_]?check|video[-_]?check/i.test(className)) {
+      return true;
+    }
+    const rect = element.getBoundingClientRect();
+    const width = viewportWidth();
+    const height = viewportHeight();
+    return rect.width > 20
+      && rect.height > 20
+      && (!width || rect.width < width * 0.95)
+      && (!height || rect.height < height * 0.95);
+  }
+
+  function findSliderCheckpoint() {
+    const handle = Array.from(document.querySelectorAll(
+      ".ecaptcha-slidebar-inner-button__normal, [class*='ecaptcha-slidebar-inner-button__normal']"
+    )).find(visible);
+    if (handle) {
+      return handle;
+    }
+    return Array.from(document.querySelectorAll(
+      "#captcha, .ecaptcha_wrapper_content, .ecaptcha-slidebar-wrapper, "
+        + "[class*='spc_video_earnest_check_box'], [class*='earnest_check']"
+    )).find((element) => visible(element) && CHECKPOINT_SLIDER_RE.test(compactText(element))) || null;
+  }
+
+  function findRiskCheckpoint() {
+    return Array.from(document.querySelectorAll(
+      "[class*='spc_video_earnest_check_box'], [class*='earnest_check'], #captcha, "
+        + ".ecaptcha_wrapper_content, .ecaptcha-slidebar-wrapper"
+    )).find((element) => visible(element) && CHECKPOINT_RISK_RE.test(compactText(element))) || null;
+  }
+
+  function findAttentionCheckpoint() {
+    return Array.from(document.querySelectorAll(
+      "[class*='spc_video_earnest_check_box'], [class*='earnest_check'], #captcha, "
+        + ".ecaptcha_wrapper_content, .ecaptcha-slidebar-wrapper"
+    )).find((element) => visible(element) && ATTENTION_CHECKPOINT_RE.test(compactText(element))) || null;
+  }
+
+  function findMissedCheckpointAck(videoPaused) {
+    return checkpointAcknowledgements().find((element) => missedCheckpointContext(element, videoPaused)) || null;
+  }
+
+  function findExactCheckpointAcknowledgement() {
+    return checkpointAcknowledgements()[0] || null;
+  }
+
+  function checkpointAcknowledgements() {
+    return Array.from(document.querySelectorAll("button, a, [role='button'], div, span"))
+      .filter((element) => visible(element))
+      .filter((element) => ["我知道了", "知道了"].includes(compactText(element)));
+  }
+
+  function missedCheckpointContext(element, videoPaused) {
+    let current = element;
+    for (let depth = 0; current && depth < 8; depth += 1) {
+      const text = compactText(current);
+      if (MISSED_CHECKPOINT_RE.test(text) || /错过|未通过|漏检|认真观看一次|重新观看/.test(text)) {
+        return true;
+      }
+      current = current.parentElement;
+    }
+    const className = String(element && element.className || "");
+    return Boolean(videoPaused) && /(^|\s)btn-Ug8Kt(?:\s|$)/.test(className);
+  }
+
+  function findMissedCheckpointWarning() {
+    return visibleCheckpointOverlays()
+      .find((element) => MISSED_CHECKPOINT_RE.test(compactText(element))) || null;
+  }
+
+  function visibleCheckpointOverlays() {
+    return uniqueElements(Array.from(document.querySelectorAll(
+      `${CHECKPOINT_OVERLAY_SELECTOR},${CHECKPOINT_CONTAINER_SELECTOR}`
+    ))).filter((element) => {
+      if (!visible(element)) {
+        return false;
+      }
+      const rect = element.getBoundingClientRect();
+      return rect.width > 20 && rect.height > 20;
+    });
+  }
+
+  function findVisibleCheckpointOverlay() {
+    return visibleCheckpointOverlays().find((element) => {
+      const text = compactText(element);
+      return !text || text.length <= 1200 || CHECKPOINT_UNKNOWN_RE.test(text);
+    }) || null;
+  }
+
+  function clickCheckpointButtons(options) {
+    return inspectCheckpointState(options) === "handled";
+  }
+
+  function hasVisibleCheckpointOverlay() {
+    return Boolean(findVisibleCheckpointOverlay());
+  }
+
+  function checkpointActionSignature(element, label) {
+    const rect = element.getBoundingClientRect();
+    return [
+      label || compactText(element),
+      Math.round(rect.left / 8),
+      Math.round(rect.top / 8)
+    ].join("|");
+  }
+
+  function checkpointActionScore(label) {
+    if (label === "点击通过检查" || label === "通过检查") {
       return 0;
     }
-    if (/跳过/.test(text)) {
+    if (label === "跳过") {
       return 1;
     }
-    if (/我知道了|知道了/.test(text)) {
+    if (label === "继续播放") {
       return 2;
-    }
-    if (/通过检查/.test(text)) {
-      return 3;
-    }
-    if (/继续播放|继续学习/.test(text)) {
-      return 4;
     }
     return 8;
   }
@@ -2979,8 +3728,11 @@
       if (!automationRunning || !video) {
         return;
       }
-      if (clickCheckpointButtons({ videoPaused: Boolean(video.paused), source: "mutation" })) {
+      const state = inspectCheckpointState({ videoPaused: Boolean(video.paused), source: "mutation" });
+      if (state === "handled") {
         scheduleAutomation(500);
+      } else {
+        guardCheckpointState(video, state);
       }
     });
     observer.observe(root, {
@@ -2993,13 +3745,99 @@
       if (event.target && event.target.tagName === "VIDEO" && automationRunning) {
         [100, 500, 1000].forEach((delay) => {
           setTimeout(() => {
-            if (clickCheckpointButtons({ videoPaused: true, source: "pause" })) {
+            if (!automationRunning) {
+              return;
+            }
+            const state = inspectCheckpointState({ videoPaused: true, source: "pause" });
+            if (state === "handled") {
               scheduleAutomation(300);
+            } else {
+              guardCheckpointState(event.target, state);
             }
           }, delay);
         });
       }
     }, true);
+  }
+
+  function guardCheckpointState(video, state) {
+    if (state === "none" || state === "handled") {
+      return false;
+    }
+    pauseVideo(video);
+    if (state === "pending") {
+      return true;
+    }
+    if (state === "blocked") {
+      finishAutomation("站点触发看课风控提示，本任务已停止且不会自动重试", {
+        reason: "playbackBlocked"
+      });
+    } else if (state === "manual") {
+      reportManualCheckpoint(video);
+    } else if (state === "missed") {
+      returnFromMissedCheckpoint();
+    } else {
+      reportUnknownCheckpoint();
+    }
+    return true;
+  }
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      candidateIsOnCurrentDiscoveryPage,
+      candidateNeedsDiscoveryFilterSwitch,
+      checkpointActionAllowed,
+      checkpointContainerForAction,
+      courseSignature,
+      courseStableIdentifier,
+      guardCheckpointState,
+      handleVideo,
+      inspectCheckpointDom,
+      inspectCheckpointState,
+      automationStartDayIndex,
+      isCheckpointContainer,
+      setCheckpointTestConfig(values) {
+        config = Object.assign({}, values || {});
+      },
+      collectDiscoveryCandidates,
+      collectInitialDiscoveryCandidates,
+      discoveryFilterLabel,
+      discoveryFiltersForPageKind,
+      discoveryHolidayFilterLabel,
+      discoveryPageKind,
+      discoverySourcePageKind,
+      discoveryTargetUrls,
+      discoveryTaskCards,
+      findDiscoveryFilter,
+      findHolidayDiscoveryOnboardingButton,
+      homeworkDiscoveryUiReady,
+      resetDiscoveryPageScanState,
+      resetCheckpointTestState() {
+        config = {};
+        resetCheckpointConfirmation();
+        attentionCheckpointLogged = false;
+        unknownCheckpointLogged = false;
+        lastMissedCheckpointReturnAt = 0;
+      },
+      resetDiscoveryTestState() {
+        urlDiscoveryCandidates = [];
+        urlDiscoveryCandidateKeys = new Set();
+        urlDiscoveryCandidateCounter = 0;
+        urlDiscoveryCurrentFilter = "";
+        urlDiscoveryInitialPageCollected = false;
+        urlDiscoveryTargetUrl = "";
+        urlDiscoveryTargetUrls = [];
+        urlDiscoveryTargetIndex = 0;
+      },
+      discoveryTestState() {
+        return {
+          candidates: urlDiscoveryCandidates.map((candidate) => Object.assign({}, candidate)),
+          currentFilter: urlDiscoveryCurrentFilter,
+          initialPageCollected: urlDiscoveryInitialPageCollected
+        };
+      }
+    };
+    return;
   }
 
   window.addEventListener("load", () => {
