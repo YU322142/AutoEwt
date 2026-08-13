@@ -101,7 +101,7 @@ GUI 与核心自动化逻辑分离，命令行入口仍然保留。
 python -m pip install -r requirements-gui.txt
 ```
 
-首次使用或 OOBE 版本升级时，GUI 会启动五步设置向导：管理多个账户并选择默认账户、导入账号任务表格、配置浏览器与人工验证、设置运行模式/账号并发，最后确认后才原子写入配置。旧版 `task_urls`/详情 `list_url` 会迁移到默认账户；损坏的 YAML 会备份为 `config.yml.invalid.bak` 并进入恢复向导。后续可在“账户”页继续添加账号，或导入含 `账户名称 / 用户名 / 密码 / 启用 / 任务名称 / 任务URL` 列的 `.xlsx`、`.csv`、`.tsv` 表格。表格空白字段不会覆盖已有账户资料。
+首次使用或 OOBE 版本升级时，GUI 会启动三步设置向导：欢迎、管理/导入账户与任务、确认写入。浏览器与人工验证、运行模式和账号并发不在 OOBE 中修改；已有配置会原样保留，首次缺失的字段使用 `normalize_config` 的安全默认值。浏览器、人工验证和运行模式可随后在“设置”页调整，账号并发在任务页调整。OOBE 不会自动打开浏览器或查询任务，完成后可在任务页主动点击“批量获取任务”。确认后配置才会原子写入。旧版 `task_urls`/详情 `list_url` 会迁移到默认账户；损坏的 YAML 会备份为 `config.yml.invalid.bak` 并进入恢复向导。后续可在“账户”页继续添加账号，或导入含 `账户名称 / 用户名 / 密码 / 启用 / 任务名称 / 任务URL` 列的 `.xlsx`、`.csv`、`.tsv` 表格。表格空白字段不会覆盖已有账户资料。
 
 启动 QFluentWidgets GUI：
 
@@ -115,7 +115,7 @@ python src/gui.py
 pythonw src/gui.pyw
 ```
 
-QFluentWidgets GUI 提供首次运行向导、多账户密码库、CSV/TSV/XLSX 表格导入、普通/暑假任务批量发现、任务多选、可调账号并发、逐任务进度和分层高级设置。同一账号的多个任务按列表顺序串行执行，不同账号才会并行。运行中心保留完整日志，并可按账号、任务和线程筛选。无头模式使用独立复选框控制，不需要手写 `--headless` 参数。桌面端不再嵌入 Qt WebEngine：未运行任务的“预览”交给系统浏览器；运行中的后台任务会直接显示它自己的 Selenium 窗口，不会关闭、刷新或重建当前页面，其他并发任务继续在后台运行。
+QFluentWidgets GUI 提供首次运行向导、多账户密码库、CSV/TSV/XLSX 表格导入、普通/暑假任务批量发现、任务多选、可调账号并发、逐任务进度和分层高级设置。任务信息发现与实际刷课共用任务页的“并发账号”数量：同一账号始终只使用一个浏览器，不同账号才会并发查询或刷课。同一账号的多个任务按列表顺序串行执行。运行中心保留完整日志，并可按账号、任务和线程筛选。无头模式使用独立复选框控制，不需要手写 `--headless` 参数。桌面端不再嵌入 Qt WebEngine：未运行任务的“预览”交给系统浏览器；运行中的后台任务会直接显示它自己的 Selenium 窗口，不会关闭、刷新或重建当前页面，其他并发任务继续在后台运行。
 
 验证码不会被自动破解或拖动。生产环境默认使用无头模式；识别到真人验证后会发送 Windows 系统通知，并且只显示对应任务的浏览器窗口。验证完成后同一会话会隐藏到后台，下一次需要人工时再恢复；用户主动点击“预览”时窗口会保持可见。这个功能要求程序运行在已经登录的交互式 Windows 桌面会话中，Windows 服务 Session 0 无法显示通知或浏览器窗口。
 
@@ -157,6 +157,15 @@ adb install -r android-geckoview/app/build/outputs/apk/debug/app-debug.apk
 更多 Android 说明见 [android-geckoview/README.md](android-geckoview/README.md)。
 
 ## 云端构建
+
+Windows Python GUI 由 GitHub Actions 自动打包：
+
+- Workflow：`.github/workflows/build.yml`
+- 触发方式：推送 `src/**`、GUI 依赖或构建工作流到 `main`/当前开发分支，或在 Actions 页面手动运行 `workflow_dispatch`
+- 入口：`src/gui.py`（Nuitka + PySide6，关闭控制台窗口）
+- Artifact：`AutoEwt-GUI-v<版本>-<提交SHA>-Windows`
+
+构建完成后，在该次运行的 **Artifacts** 区域下载 Windows GUI 压缩包；命令行版本仍由 `src/main.py` 单独维护。
 
 Android APK 由 GitHub Actions 构建：
 

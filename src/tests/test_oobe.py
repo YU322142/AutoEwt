@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,15 +17,13 @@ if str(SRC_DIR) not in sys.path:
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from account_store import AccountProfile, ImportedWorkspaceRow  # noqa: E402
+from auto_base import normalize_config  # noqa: E402
 from gui_qfluent import (  # noqa: E402
     MainWindow,
     OOBE_VERSION,
     OobeDialog,
     read_config_file,
 )
-from manual_intervention import is_headless_options  # noqa: E402
-
-
 class OobeDialogTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -65,19 +64,38 @@ class OobeDialogTests(unittest.TestCase):
 
     def test_dialog_does_not_mutate_source_before_accept(self):
         config = self.make_config()
-        original_accounts = [dict(item) for item in config['accounts']]
+        original = deepcopy(config)
         dialog = OobeDialog(config)
         try:
             dialog.accounts.pop()
-            dialog.options_edit.setText('--mute-audio --changed')
+            dialog.config['options'] = '--changed'
+            dialog.config['batch_tasks'][0]['title'] = 'changed'
 
-            self.assertEqual(config['accounts'], original_accounts)
-            self.assertIn('--disable-features=Example', config['options'])
+            self.assertEqual(config, original)
         finally:
             dialog.close()
 
     def test_apply_preserves_accounts_tasks_and_custom_browser_options(self):
-        dialog = OobeDialog(self.make_config())
+        config = self.make_config()
+        hidden_settings = {
+            'browser': 'Firefox',
+            'options': '  --mute-audio --custom-flag --headless  ',
+            'driver_path': 'drivers/custom-driver.exe',
+            'browser_binary': 'browsers/custom-browser.exe',
+            'foreground_browser': True,
+            'foreground_on_manual': False,
+            'manual_handoff_enabled': False,
+            'system_notifications': False,
+            'login_wait_timeout': 456.5,
+            'mode': 'paper',
+            'parallelism': 9,
+            'delay_multiplier': 2.75,
+            'choose_correctly': False,
+            'report_id': 'custom-report',
+            'day_to_start_on': 7,
+        }
+        config.update(hidden_settings)
+        dialog = OobeDialog(config)
         try:
             dialog._apply_config()
 
@@ -89,12 +107,80 @@ class OobeDialogTests(unittest.TestCase):
                 [item['id'] for item in dialog.config['batch_tasks']],
                 ['task-existing'],
             )
-            self.assertIn('--disable-features=Example', dialog.config['options'])
-            self.assertTrue(is_headless_options(dialog.config['options']))
+            self.assertEqual(
+                {key: dialog.config[key] for key in hidden_settings},
+                hidden_settings,
+            )
             self.assertEqual(dialog.config['oobe_version'], OOBE_VERSION)
-            self.assertEqual(dialog.config['parallelism'], 3)
+            self.assertEqual(dialog.config['parallelism'], hidden_settings['parallelism'])
+            self.assertEqual(dialog.config['day_to_start_on'], hidden_settings['day_to_start_on'])
             self.assertEqual(dialog.config['default_account_id'], 'a-1')
             self.assertEqual(dialog.config['username'], 'user-a')
+        finally:
+            dialog.close()
+
+    def test_oobe_has_only_welcome_accounts_and_confirmation_pages(self):
+        dialog = OobeDialog(self.make_config())
+        try:
+            self.assertEqual(dialog.stack.count(), 3)
+            self.assertEqual(dialog.step_label.text(), '1 / 3')
+            dialog.next()
+            self.assertEqual(dialog.stack.currentIndex(), 1)
+            dialog.next()
+            self.assertEqual(dialog.stack.currentIndex(), 2)
+            self.assertEqual(dialog.step_label.text(), '3 / 3')
+            self.assertNotIn('浏览器：', dialog.finish_summary.text())
+            self.assertNotIn('账号并发：', dialog.finish_summary.text())
+            for attribute in (
+                'browser_combo',
+                'options_edit',
+                'driver_edit',
+                'binary_edit',
+                'headless_check',
+                'notify_check',
+                'handoff_check',
+                'login_timeout_spin',
+                'mode_combo',
+                'parallel_spin',
+                'delay_spin',
+                'choose_correctly_check',
+                'report_id_edit',
+            ):
+                self.assertFalse(hasattr(dialog, attribute), attribute)
+        finally:
+            dialog.close()
+
+    def test_missing_hidden_settings_use_normalize_config_defaults(self):
+        account = AccountProfile('a-1', '甲', 'user-a', 'pass-a')
+        dialog = OobeDialog({
+            'accounts': [account.to_dict()],
+            'default_account_id': account.id,
+        })
+        hidden_keys = (
+            'browser',
+            'options',
+            'driver_path',
+            'browser_binary',
+            'foreground_browser',
+            'foreground_on_manual',
+            'manual_handoff_enabled',
+            'system_notifications',
+            'login_wait_timeout',
+            'mode',
+            'parallelism',
+            'delay_multiplier',
+            'choose_correctly',
+            'report_id',
+            'day_to_start_on',
+        )
+        try:
+            dialog._apply_config()
+            defaults = normalize_config()
+
+            self.assertEqual(
+                {key: dialog.config[key] for key in hidden_keys},
+                {key: defaults[key] for key in hidden_keys},
+            )
         finally:
             dialog.close()
 
@@ -239,17 +325,6 @@ class OobeDialogTests(unittest.TestCase):
             self.assertEqual(account.name, '乙')
             self.assertEqual(account.password, 'pass-b')
             self.assertTrue(account.enabled)
-        finally:
-            dialog.close()
-
-    def test_headless_requires_manual_handoff(self):
-        dialog = OobeDialog(self.make_config())
-        try:
-            dialog.headless_check.setChecked(True)
-            dialog.handoff_check.setChecked(False)
-
-            self.assertFalse(dialog._validate_browser())
-            self.assertIn('人工验证', dialog.error_label.text())
         finally:
             dialog.close()
 

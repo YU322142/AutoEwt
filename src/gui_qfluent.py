@@ -7,6 +7,7 @@ import shutil
 import sys
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,7 +86,7 @@ from task_discovery import DiscoveredTask, TaskDiscoverySession, is_task_detail_
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / 'config.yml'
-OOBE_VERSION = 2
+OOBE_VERSION = 3
 
 
 def configure_application_font(app: QApplication) -> str:
@@ -216,26 +217,65 @@ class DiscoveryWorker(QObject):
     completed = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, config: dict, accounts: list[AccountProfile]):
+    def __init__(
+        self,
+        config: dict,
+        accounts: list[AccountProfile],
+        parallelism: int,
+    ):
         super().__init__()
         self.config = config
         self.accounts = [account for account in accounts if account.enabled]
+        self.parallelism = max(1, int(parallelism))
         self.stop_event = threading.Event()
-        self.session: TaskDiscoverySession | None = None
+        self._session_lock = threading.Lock()
+        self._sessions: dict[str, TaskDiscoverySession] = {}
 
     @Slot()
     def run(self) -> None:
         os.chdir(APP_DIR)
         tasks: list[WorkspaceTask] = []
         try:
-            for index, account in enumerate(self.accounts, 1):
-                if self.stop_event.is_set():
-                    break
-                self.status_changed.emit(
-                    account.id,
-                    f'正在获取 {account.name}（{index}/{len(self.accounts)}）',
-                )
-                tasks.extend(self._discover_account(account))
+            worker_count = min(self.parallelism, max(1, len(self.accounts)))
+            logging.info(
+                '并发获取 %s 个账号的任务信息，账号并发数 %s',
+                len(self.accounts),
+                worker_count,
+            )
+            by_account: dict[str, list[WorkspaceTask]] = {}
+            errors: list[tuple[AccountProfile, Exception]] = []
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix='autoewt-discovery',
+            ) as executor:
+                future_accounts = {
+                    executor.submit(self._discover_account, account): account
+                    for account in self.accounts
+                }
+                for future in as_completed(future_accounts):
+                    account = future_accounts[future]
+                    if self.stop_event.is_set():
+                        continue
+                    try:
+                        by_account[account.id] = future.result()
+                    except Exception as exc:
+                        errors.append((account, exc))
+                        logging.exception(
+                            '账号“%s”自动发现任务失败',
+                            account.name,
+                            extra={
+                                'account_id': account.id,
+                                'account_name': account.name,
+                            },
+                        )
+                        self.status_changed.emit(account.id, f'获取失败：{exc}')
+            for account in self.accounts:
+                tasks.extend(by_account.get(account.id, []))
+            if errors and not by_account and not self.stop_event.is_set():
+                failed_account, error = errors[0]
+                raise RuntimeError(
+                    f'所有账号的任务信息均获取失败；{failed_account.name}：{error}'
+                ) from error
             self.completed.emit(tasks)
         except Exception as exc:
             if self.stop_event.is_set():
@@ -248,8 +288,11 @@ class DiscoveryWorker(QObject):
             self._close_session()
 
     def _discover_account(self, account: AccountProfile) -> list[WorkspaceTask]:
+        if self.stop_event.is_set():
+            return []
+        self.status_changed.emit(account.id, f'正在获取 {account.name}')
         config = apply_account(self.config, account)
-        self.session = TaskDiscoverySession(
+        session = TaskDiscoverySession(
             config,
             status_sink=(
                 lambda status: self.status_changed.emit(account.id, status)
@@ -259,10 +302,16 @@ class DiscoveryWorker(QObject):
                 lambda request: self._emit_manual(account, request)
             ),
         )
-        discovered = self.session.discover()
-        self.session.close()
-        self.session = None
-        return [self._workspace_task(account, task) for task in discovered]
+        with self._session_lock:
+            self._sessions[account.id] = session
+        try:
+            discovered = session.discover()
+            self.status_changed.emit(account.id, f'获取完成，共 {len(discovered)} 个任务')
+            return [self._workspace_task(account, task) for task in discovered]
+        finally:
+            with self._session_lock:
+                self._sessions.pop(account.id, None)
+            session.close()
 
     def _workspace_task(
         self,
@@ -300,9 +349,14 @@ class DiscoveryWorker(QObject):
         self.stop_event.set()
 
     def _close_session(self) -> None:
-        if self.session:
-            self.session.close()
-            self.session = None
+        with self._session_lock:
+            sessions = tuple(self._sessions.values())
+            self._sessions.clear()
+        for session in sessions:
+            try:
+                session.close()
+            except Exception:
+                logging.exception('关闭任务发现浏览器失败')
 
 
 class BatchWorker(QObject):
@@ -1499,7 +1553,8 @@ class OobeDialog(QDialog):
 
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
-        self.config = deepcopy(config)
+        self.config = normalize_config()
+        self.config.update(deepcopy(config))
         self.accounts = normalize_accounts(self.config)
         # Keep the configured default account until the user explicitly picks
         # another one.  Older builds silently replaced it with the first row
@@ -1527,8 +1582,6 @@ class OobeDialog(QDialog):
 
         self._build_welcome_page()
         self._build_account_page()
-        self._build_browser_page(config)
-        self._build_runtime_page(config)
         self._build_finish_page()
 
         buttons = QHBoxLayout()
@@ -1639,85 +1692,6 @@ class OobeDialog(QDialog):
         )
         self.stack.addWidget(page)
 
-    def _build_browser_page(self, config: dict) -> None:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.addWidget(SubtitleLabel('浏览器与人工验证'))
-        form = QFormLayout()
-        self.browser_combo = ComboBox()
-        self.browser_combo.addItems(['Chrome', 'Edge', 'Firefox'])
-        self.driver_edit = LineEdit()
-        self.binary_edit = LineEdit()
-        self.options_edit = LineEdit()
-        self.driver_edit.setPlaceholderText('留空时使用 Selenium Manager')
-        self.binary_edit.setPlaceholderText('留空时使用系统浏览器')
-        self.login_timeout_spin = SpinBox()
-        self.login_timeout_spin.setRange(10, 3600)
-        self.driver_browse_button = ToolButton(FIF.FOLDER)
-        self.browser_browse_button = ToolButton(FIF.FOLDER)
-        self.headless_check = CheckBox('无头模式（后台运行）')
-        self.notify_check = CheckBox('启用系统通知')
-        self.handoff_check = CheckBox('需要人工验证时显示浏览器窗口')
-
-        raw_options = str(config.get('options', '--mute-audio --headless'))
-        self.browser_combo.setCurrentText(str(config.get('browser', 'Chrome')))
-        self.driver_edit.setText(str(config.get('driver_path', '')))
-        self.binary_edit.setText(str(config.get('browser_binary', '')))
-        self.options_edit.setText(browser_options_without_mode(raw_options))
-        self.login_timeout_spin.setValue(int(config.get('login_wait_timeout', 300)))
-        self.headless_check.setChecked(is_headless_options(raw_options))
-        self.notify_check.setChecked(bool(config.get('system_notifications', True)))
-        self.handoff_check.setChecked(bool(config.get('manual_handoff_enabled', True)))
-        form.addRow('浏览器', self.browser_combo)
-        form.addRow('WebDriver', self._path_row(self.driver_edit, self.driver_browse_button))
-        form.addRow('浏览器程序', self._path_row(self.binary_edit, self.browser_browse_button))
-        form.addRow('其他浏览器参数', self.options_edit)
-        form.addRow('登录等待秒数', self.login_timeout_spin)
-        form.addRow('', self.headless_check)
-        form.addRow('', self.notify_check)
-        form.addRow('', self.handoff_check)
-        layout.addLayout(form)
-        layout.addStretch(1)
-        self.driver_browse_button.clicked.connect(
-            lambda: self._select_file(self.driver_edit, 'WebDriver (*.exe);;All files (*.*)')
-        )
-        self.browser_browse_button.clicked.connect(
-            lambda: self._select_file(self.binary_edit, 'Browser (*.exe);;All files (*.*)')
-        )
-        self.stack.addWidget(page)
-
-    def _build_runtime_page(self, config: dict) -> None:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.addWidget(SubtitleLabel('运行设置'))
-        form = QFormLayout()
-        self.mode_combo = ComboBox()
-        self.mode_combo.addItems(['video', 'paper'])
-        self.mode_combo.setCurrentText(str(config.get('mode', 'video')))
-        self.parallel_spin = SpinBox()
-        self.parallel_spin.setRange(1, 2_147_483_647)
-        self.parallel_spin.setValue(max(1, int(config.get('parallelism', 2))))
-        self.delay_spin = DoubleSpinBox()
-        self.delay_spin.setRange(0.1, 20.0)
-        self.delay_spin.setSingleStep(0.1)
-        self.delay_spin.setValue(float(config.get('delay_multiplier', 1.0)))
-        self.choose_correctly_check = CheckBox('做题时优先选择正确答案')
-        self.choose_correctly_check.setChecked(bool(config.get('choose_correctly', True)))
-        self.report_id_edit = LineEdit()
-        self.report_id_edit.setText(str(config.get('report_id', '')))
-        self.report_id_edit.setPlaceholderText('做题模式获取答案时需要')
-        self.discover_check = CheckBox('完成设置后批量获取进行中任务')
-        self.discover_check.setChecked(self._first_run)
-        form.addRow('运行模式', self.mode_combo)
-        form.addRow('账号并发数', self.parallel_spin)
-        form.addRow('操作延迟倍率', self.delay_spin)
-        form.addRow('report_id', self.report_id_edit)
-        form.addRow('', self.choose_correctly_check)
-        form.addRow('', self.discover_check)
-        layout.addLayout(form)
-        layout.addStretch(1)
-        self.stack.addWidget(page)
-
     def _build_finish_page(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -1726,29 +1700,14 @@ class OobeDialog(QDialog):
         self.finish_summary.setWordWrap(True)
         layout.addWidget(self.finish_summary)
         note = CaptionLabel(
-            '点击“完成”后才会写入配置。生产环境需运行在已登录的 Windows 桌面会话中，'
-            '系统通知和人工验证窗口才能显示。'
+            '点击“完成”后才会写入账户与导入任务。浏览器、人工验证和运行设置保持不变，'
+            '可随后在“设置”页管理；任务信息请在任务页主动获取。'
         )
         note.setWordWrap(True)
         layout.addSpacing(12)
         layout.addWidget(note)
         layout.addStretch(1)
         self.stack.addWidget(page)
-
-    @staticmethod
-    def _path_row(edit: LineEdit, button: ToolButton) -> QWidget:
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        layout.addWidget(edit, 1)
-        layout.addWidget(button)
-        return row
-
-    def _select_file(self, edit: LineEdit, file_filter: str) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, '选择文件', str(APP_DIR), file_filter)
-        if path:
-            edit.setText(path)
 
     def _show_error(self, message: str) -> None:
         self.error_label.setText(message)
@@ -1936,49 +1895,11 @@ class OobeDialog(QDialog):
             return False
         return True
 
-    def _configured_path_exists(self, value: str) -> bool:
-        text = value.strip()
-        if not text:
-            return True
-        path = Path(text)
-        if not path.is_absolute():
-            path = APP_DIR / path
-        return path.exists()
-
-    def _validate_browser(self) -> bool:
-        if not self._configured_path_exists(self.driver_edit.text()):
-            self._show_error('WebDriver 路径不存在，请重新选择或留空。')
-            return False
-        if not self._configured_path_exists(self.binary_edit.text()):
-            self._show_error('浏览器程序路径不存在，请重新选择或留空。')
-            return False
-        if self.headless_check.isChecked() and not self.handoff_check.isChecked():
-            self._show_error('无头模式下请启用“需要人工验证时显示浏览器窗口”。')
-            return False
-        return True
-
-    def _validate_runtime(self) -> bool:
-        if (
-            self.mode_combo.currentText() == 'paper'
-            and self.choose_correctly_check.isChecked()
-            and not self.report_id_edit.text().strip()
-        ):
-            self._show_error('做题模式选择正确答案时必须填写 report_id。')
-            return False
-        return True
-
     def _update_finish_summary(self) -> None:
         enabled = sum(1 for account in self.accounts if account.enabled)
-        background = '后台运行' if self.headless_check.isChecked() else '始终显示'
-        handoff = '已启用' if self.handoff_check.isChecked() else '未启用'
-        notifications = '已启用' if self.notify_check.isChecked() else '未启用'
         self.finish_summary.setText(
             f'账户：{len(self.accounts)} 个（启用 {enabled} 个）\n'
-            f'导入任务：{len(self.imported_tasks)} 个\n'
-            f'浏览器：{self.browser_combo.currentText()}，{background}\n'
-            f'人工验证窗口：{handoff}；系统通知：{notifications}\n'
-            f'模式：{self.mode_combo.currentText()}；账号并发：{self.parallel_spin.value()}\n'
-            f'完成后获取任务：{"是" if self.discover_check.isChecked() else "否"}'
+            f'导入任务：{len(self.imported_tasks)} 个'
         )
 
     def _legacy_task_urls(self) -> list[str]:
@@ -2006,29 +1927,9 @@ class OobeDialog(QDialog):
         return f'旧配置任务 {homework_id}' if homework_id else '旧配置任务'
 
     def _apply_config(self) -> None:
-        browser = self.browser_combo.currentText()
-        raw_options = self.options_edit.text().strip()
         self.config.update({
             'oobe_completed': True,
             'oobe_version': OOBE_VERSION,
-            'browser': browser,
-            'driver_path': self.driver_edit.text().strip(),
-            'browser_binary': self.binary_edit.text().strip(),
-            'options': (
-                headless_browser_options(raw_options, browser)
-                if self.headless_check.isChecked()
-                else visible_browser_options(raw_options, browser)
-            ),
-            'day_to_start_on': 1,
-            'system_notifications': self.notify_check.isChecked(),
-            'manual_handoff_enabled': self.handoff_check.isChecked(),
-            'foreground_on_manual': True,
-            'login_wait_timeout': self.login_timeout_spin.value(),
-            'mode': self.mode_combo.currentText(),
-            'parallelism': self.parallel_spin.value(),
-            'delay_multiplier': self.delay_spin.value(),
-            'choose_correctly': self.choose_correctly_check.isChecked(),
-            'report_id': self.report_id_edit.text().strip(),
             'accounts': [account.to_dict() for account in self.accounts],
         })
         selected_id = str(
@@ -2113,7 +2014,7 @@ class OobeDialog(QDialog):
             seen_urls.add(url)
             task_urls.append(url)
         self.config['task_urls'] = task_urls
-        self.discover_after_accept = self.discover_check.isChecked()
+        self.discover_after_accept = False
 
     def back(self) -> None:
         self._clear_error()
@@ -2125,10 +2026,6 @@ class OobeDialog(QDialog):
         index = self.stack.currentIndex()
         if index == 1 and not self._validate_accounts():
             return
-        if index == 2 and not self._validate_browser():
-            return
-        if index == 3 and not self._validate_runtime():
-            return
         if index < self.stack.count() - 1:
             next_index = index + 1
             if next_index == self.stack.count() - 1:
@@ -2136,11 +2033,7 @@ class OobeDialog(QDialog):
             self.stack.setCurrentIndex(next_index)
             self.update_buttons()
             return
-        if (
-            not self._validate_accounts()
-            or not self._validate_browser()
-            or not self._validate_runtime()
-        ):
+        if not self._validate_accounts():
             return
         self._apply_config()
         self.accept()
@@ -2244,10 +2137,14 @@ class MainWindow(FluentWindow):
             self._toast('没有可用账户', '请先在账户库添加并启用账户', error=True)
             return
         config = self._save_all()
+        parallelism = self.task_page.parallel_spin.value()
         self.discovery_account_ids = {account.id for account in accounts}
-        self.task_page.set_discovering(True, '准备登录')
+        self.task_page.set_discovering(
+            True,
+            f'准备并发登录（最多 {min(parallelism, len(accounts))} 个账号）',
+        )
         self.discovery_thread = QThread(self)
-        self.discovery_worker = DiscoveryWorker(config, accounts)
+        self.discovery_worker = DiscoveryWorker(config, accounts, parallelism)
         self.discovery_worker.moveToThread(self.discovery_thread)
         self.discovery_thread.started.connect(self.discovery_worker.run)
         self.discovery_worker.status_changed.connect(
@@ -2422,8 +2319,6 @@ class MainWindow(FluentWindow):
         self.task_page.set_accounts(self.account_page.accounts)
         self.task_page.load(dialog.config)
         self._toast('首次设置完成', '现在可以获取任务或导入账号表格')
-        if dialog.discover_after_accept and self.account_page.accounts:
-            QTimer.singleShot(0, self.discover_tasks)
 
     def _toast(self, title: str, content: str, error: bool = False) -> None:
         show = InfoBar.error if error else InfoBar.success

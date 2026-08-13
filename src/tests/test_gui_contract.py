@@ -363,6 +363,17 @@ class GuiContractTests(unittest.TestCase):
             'def discovery_status_changed(self, account_id: str, status: str)',
             main_window_source,
         )
+        self.assertIn('ThreadPoolExecutor', discovery_source)
+        self.assertIn('max_workers=worker_count', discovery_source)
+        self.assertIn('self.parallelism = max(1, int(parallelism))', discovery_source)
+        self.assertIn(
+            'parallelism = self.task_page.parallel_spin.value()',
+            main_window_source,
+        )
+        self.assertIn(
+            'DiscoveryWorker(config, accounts, parallelism)',
+            main_window_source,
+        )
 
     def test_oobe_is_versioned_transactional_and_multi_account(self):
         source = (SRC_DIR / 'gui_qfluent.py').read_text(encoding='utf-8')
@@ -373,14 +384,30 @@ class GuiContractTests(unittest.TestCase):
         oobe_source = ast.unparse(classes['OobeDialog'])
         main_source = ast.unparse(classes['MainWindow'])
 
-        self.assertIn('self.config = deepcopy(config)', oobe_source)
+        self.assertIn('self.config = normalize_config()', oobe_source)
+        self.assertIn('self.config.update(deepcopy(config))', oobe_source)
         self.assertIn('self.accounts = normalize_accounts(self.config)', oobe_source)
         self.assertIn('self._merge_import_rows(rows)', oobe_source)
+        self.assertIn('self._build_welcome_page()', oobe_source)
+        self.assertIn('self._build_account_page()', oobe_source)
+        self.assertIn('self._build_finish_page()', oobe_source)
+        for removed in (
+            '_build_browser_page',
+            '_build_runtime_page',
+            '_validate_browser',
+            '_validate_runtime',
+            'browser_combo',
+            'options_edit',
+            'handoff_check',
+            'parallel_spin',
+            'mode_combo',
+        ):
+            self.assertNotIn(removed, oobe_source)
         self.assertIn("'oobe_version': OOBE_VERSION", oobe_source)
         self.assertIn('self._update_finish_summary()', oobe_source)
         self.assertIn('self._apply_config()', oobe_source)
         self.assertIn('int(config.get(\'oobe_version\', 0)) < OOBE_VERSION', main_source)
-        self.assertIn('QTimer.singleShot(0, self.discover_tasks)', main_source)
+        self.assertNotIn('QTimer.singleShot(0, self.discover_tasks)', main_source)
 
     def test_config_writes_are_atomic(self):
         source = (SRC_DIR / 'gui_qfluent.py').read_text(encoding='utf-8')

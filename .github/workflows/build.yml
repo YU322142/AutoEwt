@@ -1,6 +1,21 @@
 name: 打包为可执行文件
 
 on:
+  push:
+    branches:
+      - main
+      - codex/android-geckoview-compose-cloud-build
+    paths:
+      - '.github/workflows/build.yml'
+      - 'src/**'
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+  pull_request:
+    paths:
+      - '.github/workflows/build.yml'
+      - 'src/**'
+      - 'requirements*.txt'
+      - 'pyproject.toml'
   workflow_dispatch:
     inputs:
       version:
@@ -37,14 +52,14 @@ jobs:
           output-file: AutoEwt
           enable-plugins: pyside6
           windows-console-mode: disable
-          file-version: ${{ github.event.inputs.version }}
-          product-version: ${{ github.event.inputs.version }}
+          file-version: ${{ github.event.inputs.version || '0.6.0.0' }}
+          product-version: ${{ github.event.inputs.version || '0.6.0.0' }}
           include-data-files: src/config.yml.default=./config.yml.default
           mingw64: true
 
       - name: 上传工件
         uses: actions/upload-artifact@v4
         with:
-          name: AutoEwt-GUI-v${{ github.event.inputs.version }}-Windows
+          name: AutoEwt-GUI-v${{ github.event.inputs.version || '0.6.0.0' }}-${{ github.sha }}-Windows
           path: |
             build/gui.dist/*
